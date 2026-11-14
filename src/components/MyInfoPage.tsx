@@ -156,7 +156,7 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({
     setFeedback(null);
     const sent = await showBrowserPushNotification({
       title: '한림 TAXI · 알림 테스트',
-      body: '동승자 참여, 모집 마감, 출발 6분 전 위치 사진 알림이 정상적으로 도착해요.',
+      body: '동승자 참여, 모집 마감, 출발 10분 전 위치 사진 알림이 정상적으로 도착해요.',
       tag: `test-${Date.now()}`,
     });
     if (sent) {
@@ -411,7 +411,7 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({
               실시간 브라우저 푸시 알림
             </h3>
             <p className="text-xs text-[#435E8D] mt-1 leading-relaxed">
-              동승자 참여, 모집 마감, 출발 6분 전 위치 사진 미등록 시 브라우저 알림을 받아요.
+              동승자 참여, 모집 마감, 출발 10분 전 위치 사진 미등록 시 브라우저 알림을 받아요.
             </p>
           </div>
           <span className="text-xs font-bold text-[#1D5CE5] whitespace-nowrap shrink-0">

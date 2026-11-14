@@ -3,6 +3,7 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowLeftRight,
   ArrowRight,
   Camera,
   Check,
@@ -15,6 +16,7 @@ import {
   LogOut,
   MapPin,
   Maximize2,
+  Pencil,
   RotateCcw,
   Send,
   Users,
@@ -30,15 +32,22 @@ import {
   leaveRoom,
   sendRoomSettlement,
   updateRoomLocationPhoto,
+  updateRoomSettings,
 } from '../lib/roomService';
 import {
   formatCurrency,
   formatDepartureTime,
   formatGenderConditionLabel,
+  GenderCondition,
+  LocationOption,
+  LOCATIONS,
   RoomSettlement,
   TaxiRoom,
   UserProfile,
 } from '../types';
+import { getEarliestFiveMinSlot, TimeWheelPicker } from './TimeWheelPicker';
+
+type CapacityChoice = '2' | '3' | '4' | 'any';
 
 interface RoomDetailViewProps {
   roomId: string;
@@ -76,6 +85,18 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // Edit room settings modal state (host only, before departure)
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editDeparture, setEditDeparture] = useState<LocationOption>('한림대 CLC');
+  const [editDestination, setEditDestination] = useState<LocationOption>('남춘천역');
+  const [editGenderCondition, setEditGenderCondition] = useState<GenderCondition>('any');
+  const [editCapacityChoice, setEditCapacityChoice] = useState<CapacityChoice>('4');
+  const [editDepartureTime, setEditDepartureTime] = useState<Date>(() =>
+    getEarliestFiveMinSlot(Date.now())
+  );
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -353,11 +374,63 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
     (room.status === 'open' || room.status === 'closed') &&
     !effectiveExpired &&
     nowMs <= photoDeadlineMs;
+  const canEditSettings =
+    isHost && (room.status === 'open' || room.status === 'closed') && !isExpired;
   const deadlineDate = new Date(photoDeadlineMs);
   const deadlineClock = `${deadlineDate.getHours().toString().padStart(2, '0')}시 ${deadlineDate
     .getMinutes()
     .toString()
     .padStart(2, '0')}분`;
+
+  const openEditModal = () => {
+    setEditDeparture(room.departure);
+    setEditDestination(room.destination);
+    setEditGenderCondition(room.genderCondition);
+    setEditCapacityChoice(
+      room.isFlexibleCapacity ? 'any' : (String(room.maxParticipants) as CapacityChoice)
+    );
+    const roomTimeMs = room.departureAt ? room.departureAt.toMillis() : 0;
+    setEditDepartureTime(
+      roomTimeMs > Date.now() + 60 * 1000
+        ? new Date(roomTimeMs)
+        : getEarliestFiveMinSlot(Date.now())
+    );
+    setEditError('');
+    setShowEditModal(true);
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditError('');
+    if (editDeparture === editDestination) {
+      setEditError('출발지와 목적지는 서로 다른 곳을 선택해 주세요.');
+      return;
+    }
+    const departureAtMs = editDepartureTime.getTime();
+    if (departureAtMs <= Date.now() + 30 * 1000) {
+      setEditError('출발 시간은 현재 시각 이후로 선택해 주세요.');
+      return;
+    }
+    const isFlexibleCapacity = editCapacityChoice === 'any';
+    const maxParticipants = isFlexibleCapacity ? 4 : Number(editCapacityChoice);
+
+    setSavingSettings(true);
+    try {
+      await updateRoomSettings(room.id, profile, {
+        departure: editDeparture,
+        destination: editDestination,
+        genderCondition: editGenderCondition,
+        maxParticipants,
+        isFlexibleCapacity,
+        departureAtMs,
+      });
+      setShowEditModal(false);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : '방 설정을 수정하지 못했어요.');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
@@ -390,14 +463,27 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
         <div className="lg:col-span-7 space-y-4">
           <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 sm:p-6 space-y-4">
             <div className="space-y-1.5">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-[#0284C7] tabular-nums">
-                <Clock className="w-3.5 h-3.5" />
-                <span>{clockText}</span>
-                {room.status === 'open' && !effectiveExpired && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span>{remainingText}</span>
-                  </>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-[#0284C7] tabular-nums">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>{clockText}</span>
+                  {room.status === 'open' && !effectiveExpired && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>{remainingText}</span>
+                    </>
+                  )}
+                </div>
+
+                {canEditSettings && (
+                  <button
+                    type="button"
+                    onClick={openEditModal}
+                    className="min-h-[36px] px-3 rounded-xl border border-[#C6DCF7] bg-[#F4F9FF] hover:bg-[#EBF4FF] text-xs font-semibold text-[#1D5CE5] inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    방 설정 수정
+                  </button>
                 )}
               </div>
 
@@ -864,6 +950,226 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
             )}
         </div>
       </div>
+
+      {showEditModal && (
+        <div
+          className="fixed inset-0 z-50 bg-[#0D1B3E]/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => {
+            if (!savingSettings) setShowEditModal(false);
+          }}
+        >
+          <form
+            onSubmit={handleSaveSettings}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-lg max-h-[92vh] overflow-y-auto bg-white rounded-t-3xl sm:rounded-3xl border border-[#D4E4F7] p-5 sm:p-6 space-y-5"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-lg font-bold text-[#0D1B3E]">방 설정 수정</h3>
+                <p className="text-xs text-[#435E8D] mt-0.5">
+                  출발 전까지 경로, 인원, 성별 조건 및 출발 시간을 변경할 수 있어요.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingSettings}
+                onClick={() => setShowEditModal(false)}
+                aria-label="닫기"
+                className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-[#435E8D] hover:bg-[#EBF4FF]"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {editError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 p-3.5 rounded-2xl bg-[#0D1B3E] text-white text-xs"
+              >
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#7DD3FC]" />
+                <span>{editError}</span>
+              </div>
+            )}
+
+            {/* Departure & Destination */}
+            <div className="space-y-2">
+              <span className="block text-xs font-bold text-[#0D1B3E]">출발지 · 목적지</span>
+              <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+                <div>
+                  <label htmlFor="edit-departure" className="block text-[11px] font-medium text-[#435E8D] mb-1">
+                    출발지
+                  </label>
+                  <select
+                    id="edit-departure"
+                    value={editDeparture}
+                    onChange={(e) => {
+                      const next = e.target.value as LocationOption;
+                      if (next === editDestination) {
+                        setEditDestination(editDeparture);
+                      }
+                      setEditDeparture(next);
+                    }}
+                    className="w-full min-h-[46px] px-3 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-xs sm:text-sm font-semibold text-[#0D1B3E]"
+                  >
+                    {LOCATIONS.map((loc) => (
+                      <option key={loc} value={loc}>
+                        {loc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditDeparture(editDestination);
+                    setEditDestination(editDeparture);
+                  }}
+                  aria-label="출발지와 목적지 바꾸기"
+                  className="min-w-[44px] min-h-[46px] rounded-xl border border-[#D4E4F7] bg-[#F4F9FF] hover:bg-[#EBF4FF] text-[#1D5CE5] flex items-center justify-center transition-colors"
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                </button>
+
+                <div>
+                  <label htmlFor="edit-destination" className="block text-[11px] font-medium text-[#435E8D] mb-1">
+                    목적지
+                  </label>
+                  <select
+                    id="edit-destination"
+                    value={editDestination}
+                    onChange={(e) => {
+                      const next = e.target.value as LocationOption;
+                      if (next === editDeparture) {
+                        setEditDeparture(editDestination);
+                      }
+                      setEditDestination(next);
+                    }}
+                    className="w-full min-h-[46px] px-3 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-xs sm:text-sm font-semibold text-[#0D1B3E]"
+                  >
+                    {LOCATIONS.map((loc) => (
+                      <option key={loc} value={loc}>
+                        {loc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Gender Condition */}
+            <div className="space-y-2">
+              <span className="block text-xs font-bold text-[#0D1B3E]">동승자 성별</span>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    { value: 'male', label: '남자' },
+                    { value: 'female', label: '여자' },
+                    { value: 'any', label: '상관없음' },
+                  ] as const
+                ).map((opt) => {
+                  const genderRestricted = opt.value !== 'any' && opt.value !== profile.gender;
+                  const participantRestricted =
+                    room.currentParticipants > 1 &&
+                    opt.value !== room.genderCondition &&
+                    opt.value !== 'any';
+                  const disabled = genderRestricted || participantRestricted;
+
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => setEditGenderCondition(opt.value)}
+                      className={`min-h-[46px] rounded-xl border text-sm font-semibold whitespace-nowrap transition-colors ${
+                        editGenderCondition === opt.value
+                          ? 'bg-[#1D5CE5] border-[#1D5CE5] text-white'
+                          : disabled
+                          ? 'bg-[#F4F9FF] border-[#E2ECF9] text-[#94ABD0] cursor-not-allowed'
+                          : 'bg-[#F8FBFF] border-[#D4E4F7] text-[#0D1B3E] hover:bg-[#EBF4FF]'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {room.currentParticipants > 1 && room.genderCondition === 'any' && (
+                <p className="text-[11px] text-[#435E8D]">
+                  동승자가 참여한 방은 성별 조건을 제한할 수 없어요.
+                </p>
+              )}
+            </div>
+
+            {/* Capacity */}
+            <div className="space-y-2">
+              <span className="block text-xs font-bold text-[#0D1B3E]">
+                모집 인원 (현재 {room.currentParticipants}명 참여 중)
+              </span>
+              <div className="grid grid-cols-4 gap-2">
+                {(
+                  [
+                    { value: '2', label: '2명', count: 2 },
+                    { value: '3', label: '3명', count: 3 },
+                    { value: '4', label: '4명', count: 4 },
+                    { value: 'any', label: '상관 없음', count: 4 },
+                  ] as const
+                ).map((opt) => {
+                  const disabled = opt.count < room.currentParticipants;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => setEditCapacityChoice(opt.value)}
+                      className={`min-h-[46px] px-1 rounded-xl border text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap transition-colors ${
+                        editCapacityChoice === opt.value
+                          ? 'bg-[#1D5CE5] border-[#1D5CE5] text-white'
+                          : disabled
+                          ? 'bg-[#F4F9FF] border-[#E2ECF9] text-[#94ABD0] cursor-not-allowed'
+                          : 'bg-[#F8FBFF] border-[#D4E4F7] text-[#0D1B3E] hover:bg-[#EBF4FF]'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {editCapacityChoice === 'any' && (
+                <p className="text-[11px] text-[#0284C7] leading-relaxed">
+                  최대 4명까지 모이며, 모집자가 원할 때 그 시점에 모인 인원끼리 바로 마감할 수 있어요.
+                </p>
+              )}
+            </div>
+
+            {/* Departure Time */}
+            <TimeWheelPicker
+              value={editDepartureTime}
+              onChange={setEditDepartureTime}
+              active={showEditModal}
+            />
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={savingSettings}
+                onClick={() => setShowEditModal(false)}
+                className="min-h-[48px] rounded-xl border border-[#D4E4F7] bg-white hover:bg-[#F4F9FF] text-sm font-semibold text-[#435E8D] transition-colors"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                disabled={savingSettings}
+                className="min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Check className="w-4 h-4" />
+                {savingSettings ? '저장 중...' : '설정 저장'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {zoomPhoto && (
         <div

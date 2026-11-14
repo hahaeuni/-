@@ -150,6 +150,17 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function roomSettingsUnchanged() {
+      return incoming().departure == existing().departure &&
+        incoming().destination == existing().destination &&
+        incoming().genderCondition == existing().genderCondition &&
+        incoming().maxParticipants == existing().maxParticipants &&
+        ((!('isFlexibleCapacity' in existing()) && !('isFlexibleCapacity' in incoming())) ||
+          (('isFlexibleCapacity' in existing()) && ('isFlexibleCapacity' in incoming()) && incoming().isFlexibleCapacity == existing().isFlexibleCapacity)) &&
+        incoming().departureMinutes == existing().departureMinutes &&
+        incoming().departureAt == existing().departureAt;
+    }
+
     function isValidSettlement(data) {
       return data.keys().hasAll([
           'roomId', 'hostId', 'totalFare', 'participantCount', 'perPersonAmount',
@@ -281,18 +292,12 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(roomId) && isValidTaxiRoom(incoming()) &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        incoming().departure == existing().departure &&
-        incoming().destination == existing().destination &&
-        incoming().genderCondition == existing().genderCondition &&
-        incoming().maxParticipants == existing().maxParticipants &&
-        ((!('isFlexibleCapacity' in existing()) && !('isFlexibleCapacity' in incoming())) || (('isFlexibleCapacity' in existing()) && ('isFlexibleCapacity' in incoming()) && incoming().isFlexibleCapacity == existing().isFlexibleCapacity)) &&
-        incoming().departureMinutes == existing().departureMinutes &&
-        incoming().departureAt == existing().departureAt &&
         (existing().status in ['open', 'closed', 'settled'] || isAdmin()) &&
         (
           isAdmin() ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'open' &&
             existing().departureAt > request.time &&
             !(request.auth.uid in existing().participantIds) &&
@@ -312,6 +317,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'open' &&
             existing().currentParticipants > 1 &&
             request.auth.uid in existing().participantIds &&
@@ -329,6 +335,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'open' &&
             existing().currentParticipants == 1 &&
             existing().hostId == request.auth.uid &&
@@ -340,6 +347,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'open' &&
             request.time >= existing().departureAt &&
             incoming().hostId == existing().hostId &&
@@ -350,6 +358,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'open' &&
             existing().hostId == request.auth.uid &&
             ('isFlexibleCapacity' in existing()) &&
@@ -363,6 +372,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status in ['open', 'closed'] &&
             existing().hostId == request.auth.uid &&
             request.time <= existing().departureAt - duration.value(5, 'm') &&
@@ -374,6 +384,33 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            existing().status in ['open', 'closed'] &&
+            existing().hostId == request.auth.uid &&
+            request.time < existing().departureAt &&
+            incoming().departureAt > request.time &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
+            incoming().maxParticipants >= existing().currentParticipants &&
+            (
+              incoming().genderCondition == existing().genderCondition ||
+              incoming().genderCondition == 'any' ||
+              existing().currentParticipants == 1
+            ) &&
+            (incoming().genderCondition == 'any' || incoming().genderCondition == userDoc(request.auth.uid).gender) &&
+            incoming().status == (
+              existing().currentParticipants >= incoming().maxParticipants
+                ? 'closed'
+                : (existing().status == 'open' || incoming().maxParticipants > existing().maxParticipants ? 'open' : 'closed')
+            ) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'departure', 'destination', 'genderCondition', 'maxParticipants',
+              'isFlexibleCapacity', 'departureMinutes', 'departureAt', 'status', 'updatedAt'
+            ])
+          ) ||
+          (
+            isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'closed' &&
             existing().hostId == request.auth.uid &&
             incoming().hostId == existing().hostId &&
@@ -385,6 +422,7 @@ service cloud.firestore {
           ) ||
           (
             isApprovedUser() &&
+            roomSettingsUnchanged() &&
             existing().status == 'settled' &&
             existing().hostId == request.auth.uid &&
             incoming().hostId == existing().hostId &&

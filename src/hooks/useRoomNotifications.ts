@@ -144,7 +144,7 @@ export function useRoomNotifications({
     prevRoomsRef.current = currentMap;
   }, [myRooms, myRoomsLoaded, currentUserId]);
 
-  // 3. Urgent notification when location photo is still missing at 6 minutes before departure
+  // 3. Urgent notification when location photo is still missing at 10 minutes before departure
   useEffect(() => {
     if (!currentUserId || !myRoomsLoaded) return;
 
@@ -153,17 +153,18 @@ export function useRoomNotifications({
       if (room.locationPhotoUrl) return;
       if (!room.departureAt) return;
 
-      const remainingMs = room.departureAt.toMillis() - nowMs;
-      if (remainingMs > 0 && remainingMs <= 6 * 60 * 1000) {
+      const departureMs = room.departureAt.toMillis();
+      const remainingMs = departureMs - nowMs;
+      if (remainingMs > 0 && remainingMs <= 10 * 60 * 1000) {
         const isHost = room.hostId === currentUserId;
         emitNotification({
-          eventKey: `missing_photo_6m:${room.id}:${isHost ? 'host' : 'guest'}`,
+          eventKey: `missing_photo_10m:${room.id}:${departureMs}:${isHost ? 'host' : 'guest'}`,
           title: isHost
             ? '한림 TAXI · 위치 사진 등록 마감 임박'
             : '한림 TAXI · 모집자 위치 사진 미등록',
           body: isHost
-            ? `출발 6분 전이에요! 출발 5분 전까지 ${room.departure} 현재 위치 사진을 등록해 주세요.`
-            : `출발 6분 전인데 ${room.departure} → ${room.destination} 방에 아직 위치 사진이 올라오지 않았어요.`,
+            ? `출발 10분 전이에요! 출발 5분 전까지 ${room.departure} 현재 위치 사진을 등록해 주세요.`
+            : `출발 10분 전인데 ${room.departure} → ${room.destination} 방에 아직 위치 사진이 올라오지 않았어요.`,
           roomId: room.id,
         });
       }

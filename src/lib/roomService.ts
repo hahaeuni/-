@@ -171,6 +171,95 @@ export async function updateRoomLocationPhoto(
   }
 }
 
+export async function updateRoomSettings(
+  roomId: string,
+  hostProfile: UserProfile,
+  input: {
+    departure: LocationOption;
+    destination: LocationOption;
+    genderCondition: GenderCondition;
+    maxParticipants: number;
+    isFlexibleCapacity: boolean;
+    departureAtMs: number;
+  }
+): Promise<void> {
+  if (input.departure === input.destination) {
+    throw new Error('출발지와 목적지는 서로 다른 곳을 선택해 주세요.');
+  }
+  if (input.genderCondition !== 'any' && input.genderCondition !== hostProfile.gender) {
+    throw new Error('본인 성별과 맞지 않는 성별 조건으로 변경할 수 없어요.');
+  }
+  if (input.maxParticipants < 2 || input.maxParticipants > 4) {
+    throw new Error('모집 인원은 2명에서 4명 사이로 설정해 주세요.');
+  }
+  const nowMs = Date.now();
+  if (!Number.isFinite(input.departureAtMs) || input.departureAtMs <= nowMs + 30 * 1000) {
+    throw new Error('출발 시간은 현재 시각 이후로 선택해 주세요.');
+  }
+
+  const roomRef = doc(db, 'rooms', roomId);
+  const departureAt = Timestamp.fromMillis(input.departureAtMs);
+  const departureMinutes = Math.max(
+    1,
+    Math.min(1440, Math.round((input.departureAtMs - nowMs) / 60000))
+  );
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) {
+        throw new Error('방을 찾을 수 없어요.');
+      }
+      const room = snap.data() as Omit<TaxiRoom, 'id'>;
+      if (room.hostId !== hostProfile.uid) {
+        throw new Error('모집자만 방 설정을 수정할 수 있어요.');
+      }
+      if (room.status !== 'open' && room.status !== 'closed') {
+        throw new Error('이미 정산 중이거나 종료된 방은 수정할 수 없어요.');
+      }
+      if (room.departureAt.toMillis() <= Date.now()) {
+        throw new Error('출발 시간이 지난 방은 수정할 수 없어요.');
+      }
+      if (input.maxParticipants < room.currentParticipants) {
+        throw new Error(
+          `현재 참여 중인 인원(${room.currentParticipants}명)보다 적은 인원으로 줄일 수 없어요.`
+        );
+      }
+      if (
+        room.currentParticipants > 1 &&
+        input.genderCondition !== room.genderCondition &&
+        input.genderCondition !== 'any'
+      ) {
+        throw new Error('이미 동승자가 참여한 방의 성별 조건은 좁힐 수 없어요.');
+      }
+
+      const nextStatus =
+        room.currentParticipants >= input.maxParticipants
+          ? 'closed'
+          : room.status === 'open' || input.maxParticipants > room.maxParticipants
+          ? 'open'
+          : 'closed';
+
+      tx.update(roomRef, {
+        departure: input.departure,
+        destination: input.destination,
+        genderCondition: input.genderCondition,
+        maxParticipants: input.maxParticipants,
+        isFlexibleCapacity: input.isFlexibleCapacity,
+        departureMinutes,
+        departureAt,
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
+      throw error;
+    }
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+  }
+}
+
 export async function joinRoom(roomId: string, profile: UserProfile): Promise<void> {
   const activeRoom = await findActiveUserRoom(profile.uid);
   if (activeRoom) {
