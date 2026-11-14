@@ -1,16 +1,19 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   hasNotifiedEvent,
   markEventNotified,
   showBrowserPushNotification,
 } from '../lib/notificationService';
-import { TaxiRoom } from '../types';
+import { formatCurrency, RoomSettlement, TaxiRoom } from '../types';
 
 export interface InAppNotificationToast {
   id: string;
   title: string;
   body: string;
   roomId?: string;
+  durationMs?: number;
 }
 
 interface UseRoomNotificationsArgs {
@@ -22,6 +25,8 @@ interface UseRoomNotificationsArgs {
   onOpenRoomFromNotification: (roomId: string) => void;
 }
 
+const SETTLEMENT_RECENT_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 export function useRoomNotifications({
   myRooms,
   myRoomsLoaded,
@@ -32,29 +37,79 @@ export function useRoomNotifications({
 }: UseRoomNotificationsArgs): void {
   const prevRoomsRef = useRef<Map<string, TaxiRoom> | null>(null);
 
-  const emitNotification = (params: {
-    eventKey: string;
-    title: string;
-    body: string;
-    roomId: string;
-  }) => {
-    if (hasNotifiedEvent(params.eventKey)) return;
-    markEventNotified(params.eventKey);
+  const emitNotification = useCallback(
+    (params: {
+      eventKey: string;
+      title: string;
+      body: string;
+      roomId: string;
+      durationMs?: number;
+    }) => {
+      if (hasNotifiedEvent(params.eventKey)) return;
+      markEventNotified(params.eventKey);
 
-    onInAppToast({
-      id: params.eventKey,
-      title: params.title,
-      body: params.body,
-      roomId: params.roomId,
-    });
+      onInAppToast({
+        id: params.eventKey,
+        title: params.title,
+        body: params.body,
+        roomId: params.roomId,
+        durationMs: params.durationMs,
+      });
 
-    void showBrowserPushNotification({
-      title: params.title,
-      body: params.body,
-      tag: params.eventKey,
-      roomId: params.roomId,
-    });
-  };
+      void showBrowserPushNotification({
+        title: params.title,
+        body: params.body,
+        tag: params.eventKey,
+        roomId: params.roomId,
+      });
+    },
+    [onInAppToast]
+  );
+
+  const emitSettlementNotification = useCallback(
+    async (room: TaxiRoom) => {
+      const eventKey = `settlement_request:${room.id}`;
+      if (hasNotifiedEvent(eventKey)) return;
+      markEventNotified(eventKey);
+
+      let detailSuffix = '터치해서 정산 금액과 계좌번호를 확인해 주세요.';
+      const settlementPath = `rooms/${room.id}/settlement/info`;
+      try {
+        const snap = await getDoc(doc(db, 'rooms', room.id, 'settlement', 'info'));
+        if (snap.exists()) {
+          const data = snap.data() as RoomSettlement;
+          if (typeof data.perPersonAmount === 'number' && data.perPersonAmount > 0) {
+            detailSuffix = `1인당 ${formatCurrency(data.perPersonAmount)} (${data.bankName} ${data.accountNumber}) · 터치해서 계좌를 확인해 주세요.`;
+          }
+        }
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.GET, settlementPath);
+        } catch {
+          // Fallback to generic settlement notification body if lookup fails
+        }
+      }
+
+      const title = '한림 TAXI · 정산 요청';
+      const body = `${room.hostName}님이 ${room.departure} → ${room.destination} 택시비 정산 계좌를 보냈어요. ${detailSuffix}`;
+
+      onInAppToast({
+        id: eventKey,
+        title,
+        body,
+        roomId: room.id,
+        durationMs: 15000,
+      });
+
+      void showBrowserPushNotification({
+        title,
+        body,
+        tag: eventKey,
+        roomId: room.id,
+      });
+    },
+    [onInAppToast]
+  );
 
   // Listen for notification clicks routed back from the Service Worker
   useEffect(() => {
@@ -78,16 +133,27 @@ export function useRoomNotifications({
     }
   }, [currentUserId, myRoomsLoaded]);
 
-  // 1 & 2. Real-time participant join & host close notifications
+  // 1, 2 & 3. Real-time participant join, host close, and settlement request notifications
   useEffect(() => {
     if (!currentUserId || !myRoomsLoaded) return;
 
     const currentMap = new Map<string, TaxiRoom>();
     myRooms.forEach((r) => currentMap.set(r.id, r));
 
-    // Seed baseline on first loaded snapshot without firing historical notifications
+    // Seed baseline on first loaded snapshot; still surface recent unnotified settlement requests
     if (prevRoomsRef.current === null) {
       prevRoomsRef.current = currentMap;
+      const recentCutoff = Date.now() - SETTLEMENT_RECENT_WINDOW_MS;
+      myRooms.forEach((room) => {
+        if (
+          room.status === 'settled' &&
+          room.hostId !== currentUserId &&
+          room.updatedAt &&
+          room.updatedAt.toMillis() >= recentCutoff
+        ) {
+          void emitSettlementNotification(room);
+        }
+      });
       return;
     }
 
@@ -95,7 +161,18 @@ export function useRoomNotifications({
 
     myRooms.forEach((room) => {
       const prev = prevMap.get(room.id);
-      if (!prev) return;
+      if (!prev) {
+        const recentCutoff = Date.now() - SETTLEMENT_RECENT_WINDOW_MS;
+        if (
+          room.status === 'settled' &&
+          room.hostId !== currentUserId &&
+          room.updatedAt &&
+          room.updatedAt.toMillis() >= recentCutoff
+        ) {
+          void emitSettlementNotification(room);
+        }
+        return;
+      }
 
       // Trigger 1: A new companion joined this room
       const addedJoiners: { uid: string; name: string }[] = [];
@@ -139,12 +216,17 @@ export function useRoomNotifications({
           });
         }
       }
+
+      // Trigger 3: Host sent settlement bank account -> notify companions
+      if (prev.status !== 'settled' && room.status === 'settled' && room.hostId !== currentUserId) {
+        void emitSettlementNotification(room);
+      }
     });
 
     prevRoomsRef.current = currentMap;
-  }, [myRooms, myRoomsLoaded, currentUserId]);
+  }, [myRooms, myRoomsLoaded, currentUserId, emitNotification, emitSettlementNotification]);
 
-  // 3. Urgent notification when location photo is still missing at 10 minutes before departure
+  // 4. Urgent notification when location photo is still missing at 10 minutes before departure
   useEffect(() => {
     if (!currentUserId || !myRoomsLoaded) return;
 
@@ -169,5 +251,5 @@ export function useRoomNotifications({
         });
       }
     });
-  }, [myRooms, myRoomsLoaded, nowMs, currentUserId]);
+  }, [myRooms, myRoomsLoaded, nowMs, currentUserId, emitNotification]);
 }

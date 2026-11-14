@@ -228,7 +228,7 @@ function MainApp() {
     if (!activeToast) return;
     const timer = window.setTimeout(() => {
       setActiveToast(null);
-    }, 8000);
+    }, activeToast.durationMs ?? 8000);
     return () => window.clearTimeout(timer);
   }, [activeToast]);
 
@@ -536,7 +536,7 @@ function MainApp() {
                 <div>
                   <p className="text-xs font-bold text-[#0D1B3E]">실시간 브라우저 푸시 알림 받기</p>
                   <p className="text-xs text-[#435E8D] mt-0.5 leading-relaxed">
-                    새 동승자 참여, 모집 마감, 출발 10분 전 위치 사진 미등록 알림을 바로 받아볼 수 있어요.
+                    새 동승자 참여, 모집 마감, 출발 10분 전 위치 사진 미등록, 정산 요청 알림을 바로 받아볼 수 있어요.
                   </p>
                 </div>
               </div>
