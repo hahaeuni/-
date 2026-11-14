@@ -1,5 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { ConfirmationResult, RecaptchaVerifier } from 'firebase/auth';
+import React, { useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -11,10 +10,8 @@ import {
 } from 'lucide-react';
 import {
   changeMyPassword,
-  createRecaptchaVerifier,
   deleteMyAccount,
   logoutUser,
-  sendPhoneOtp,
   updateMyProfile,
 } from '../lib/authService';
 import { BANKS, formatGenderLabel, LIMITS, UserProfile } from '../types';
@@ -43,11 +40,6 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
   // Delete account modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
-  const [deletePhoneConfirmation, setDeletePhoneConfirmation] =
-    useState<ConfirmationResult | null>(null);
-  const [deletePhoneCode, setDeletePhoneCode] = useState('');
-  const [sendingDeleteOtp, setSendingDeleteOtp] = useState(false);
-  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
 
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
@@ -55,19 +47,6 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const resolvedBank = bankName === '직접입력' ? customBankName : bankName;
-
-  useEffect(() => {
-    return () => {
-      if (recaptchaRef.current) {
-        try {
-          recaptchaRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaRef.current = null;
-      }
-    };
-  }, []);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,42 +95,12 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
     }
   };
 
-  const handleSendDeletePhoneOtp = async () => {
-    setFeedback(null);
-    setSendingDeleteOtp(true);
-    try {
-      if (recaptchaRef.current) {
-        try {
-          recaptchaRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaRef.current = null;
-      }
-      const verifier = createRecaptchaVerifier('delete-recaptcha-container');
-      recaptchaRef.current = verifier;
-      const result = await sendPhoneOtp(profile.phone, verifier);
-      setDeletePhoneConfirmation(result);
-    } catch (err) {
-      setFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : '인증번호를 보내지 못했어요.',
-      });
-    } finally {
-      setSendingDeleteOtp(false);
-    }
-  };
-
   const handleConfirmDelete = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
     setDeleting(true);
     try {
-      await deleteMyAccount(profile, {
-        currentPassword: deletePassword,
-        phoneConfirmation: deletePhoneConfirmation ?? undefined,
-        phoneCode: deletePhoneCode,
-      });
+      await deleteMyAccount(profile, deletePassword);
     } catch (err) {
       setFeedback({
         type: 'err',
@@ -162,17 +111,8 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
     }
   };
 
-  const providerLabel =
-    profile.authProvider === 'google'
-      ? '구글 로그인'
-      : profile.authProvider === 'phone'
-      ? '전화번호 인증'
-      : '아이디 로그인';
-
   return (
     <div className="max-w-2xl mx-auto space-y-5">
-      <div id="delete-recaptcha-container" />
-
       {/* Header Summary */}
       <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 sm:p-6 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3.5 min-w-0">
@@ -182,7 +122,8 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-[#0D1B3E] truncate">{profile.name}</h2>
             <p className="text-xs text-[#435E8D] truncate">
-              아이디 {profile.username} · {formatGenderLabel(profile.gender)} · {providerLabel}
+              아이디 {profile.username} · {formatGenderLabel(profile.gender)} ·{' '}
+              {profile.authProvider === 'google' ? '구글 로그인' : '아이디 로그인'}
             </p>
           </div>
         </div>
@@ -399,9 +340,7 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
         </form>
       ) : (
         <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 text-xs text-[#435E8D]">
-          {profile.authProvider === 'google'
-            ? '구글 계정으로 로그인한 회원이에요. 비밀번호는 구글 계정 설정에서 관리할 수 있어요.'
-            : '전화번호 인증으로 가입한 회원이에요. 로그인 시 휴대폰 인증번호를 사용합니다.'}
+          구글 계정으로 로그인한 회원이에요. 비밀번호는 구글 계정 설정에서 관리할 수 있어요.
         </div>
       )}
 
@@ -415,11 +354,7 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
         </div>
         <button
           type="button"
-          onClick={() => {
-            setDeletePhoneConfirmation(null);
-            setDeletePhoneCode('');
-            setShowDeleteModal(true);
-          }}
+          onClick={() => setShowDeleteModal(true)}
           className="min-h-[44px] px-4 rounded-xl bg-[#0D1B3E] hover:bg-[#162D66] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 transition-colors"
         >
           <Trash2 className="w-4 h-4" />
@@ -459,38 +394,6 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
               </div>
             )}
 
-            {profile.authProvider === 'phone' && (
-              <div className="space-y-2.5">
-                {!deletePhoneConfirmation ? (
-                  <button
-                    type="button"
-                    disabled={sendingDeleteOtp}
-                    onClick={() => void handleSendDeletePhoneOtp()}
-                    className="w-full min-h-[44px] rounded-xl border border-[#1D5CE5] text-[#1D5CE5] text-xs font-semibold"
-                  >
-                    {sendingDeleteOtp ? '인증번호 전송 중...' : `${profile.phone}로 본인 확인 인증번호 받기`}
-                  </button>
-                ) : (
-                  <div>
-                    <label htmlFor="del-otp" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
-                      인증번호 6자리
-                    </label>
-                    <input
-                      id="del-otp"
-                      type="text"
-                      inputMode="numeric"
-                      required
-                      maxLength={6}
-                      value={deletePhoneCode}
-                      onChange={(e) => setDeletePhoneCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="6자리 숫자 입력"
-                      className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-sm font-bold tracking-widest text-[#0D1B3E] tabular-nums"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
             <div className="grid grid-cols-2 gap-2.5 pt-1">
               <button
                 type="button"
@@ -502,11 +405,8 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
               </button>
               <button
                 type="submit"
-                disabled={
-                  deleting ||
-                  (profile.authProvider === 'phone' && deletePhoneCode.length < 6)
-                }
-                className="min-h-[46px] rounded-xl bg-[#0D1B3E] disabled:opacity-45 text-white text-sm font-semibold"
+                disabled={deleting}
+                className="min-h-[46px] rounded-xl bg-[#0D1B3E] text-white text-sm font-semibold"
               >
                 {deleting ? '삭제 중...' : '탈퇴 확인'}
               </button>

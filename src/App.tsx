@@ -229,7 +229,7 @@ function MainApp() {
   }
 
   if (!firebaseUser) {
-    return <AuthScreen externalPendingUser={null} />;
+    return <AuthScreen googlePendingUser={null} />;
   }
 
   // Dedicated Admin UID (MAAA6M66iMRXh42cyYrcdk9yYLB2) defaults directly to Admin Dashboard
@@ -288,11 +288,10 @@ function MainApp() {
   if (!profile) {
     return (
       <AuthScreen
-        externalPendingUser={{
+        googlePendingUser={{
           uid: firebaseUser.uid,
           email: firebaseUser.email,
           displayName: firebaseUser.displayName,
-          phoneNumber: firebaseUser.phoneNumber,
         }}
         isAdminEmail={isAdmin}
         onOpenAdminPage={() => setAdminBypassOpen(true)}

@@ -1,14 +1,10 @@
 import {
-  ConfirmationResult,
   createUserWithEmailAndPassword,
   deleteUser,
   EmailAuthProvider,
-  PhoneAuthProvider,
   reauthenticateWithCredential,
   reauthenticateWithPopup,
-  RecaptchaVerifier,
   signInWithEmailAndPassword,
-  signInWithPhoneNumber,
   signInWithPopup,
   signOut,
   updatePassword,
@@ -26,7 +22,6 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
-  AuthProviderType,
   Gender,
   LIMITS,
   USERNAME_EMAIL_DOMAIN,
@@ -61,7 +56,7 @@ export interface SignUpInput {
   agreedToPrivacy: boolean;
 }
 
-export interface ExternalCompleteProfileInput {
+export interface GoogleCompleteProfileInput {
   name: string;
   username: string;
   phone: string;
@@ -71,43 +66,6 @@ export interface ExternalCompleteProfileInput {
   accountHolder: string;
   studentIdPhotoBlob: Blob;
   agreedToPrivacy: boolean;
-}
-
-export function formatKoreanPhoneToE164(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('+')) {
-    const digits = trimmed.slice(1).replace(/\D/g, '');
-    if (digits.length < 10 || digits.length > 15) {
-      throw new Error('올바른 전화번호 형식을 입력해 주세요. (예: 010-1234-5678)');
-    }
-    return `+${digits}`;
-  }
-  const digits = trimmed.replace(/\D/g, '');
-  if (digits.length < 9 || digits.length > 11) {
-    throw new Error('올바른 휴대폰 번호를 입력해 주세요. (예: 010-1234-5678)');
-  }
-  if (digits.startsWith('0')) {
-    return `+82${digits.slice(1)}`;
-  }
-  if (digits.startsWith('82')) {
-    return `+${digits}`;
-  }
-  return `+82${digits}`;
-}
-
-export function formatE164ToKoreanDisplay(phone: string | null | undefined): string {
-  if (!phone) return '';
-  if (phone.startsWith('+82')) {
-    const local = `0${phone.slice(3)}`.replace(/\D/g, '');
-    if (local.length === 11) {
-      return `${local.slice(0, 3)}-${local.slice(3, 7)}-${local.slice(7)}`;
-    }
-    if (local.length === 10) {
-      return `${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}`;
-    }
-    return local;
-  }
-  return phone;
 }
 
 function validateProfileFields(input: {
@@ -172,14 +130,6 @@ export function translateAuthError(error: unknown): string {
       return '아이디(이메일) 또는 비밀번호가 맞지 않아요.';
     case 'auth/weak-password':
       return '비밀번호는 6자 이상으로 입력해 주세요.';
-    case 'auth/invalid-phone-number':
-      return '올바른 전화번호 형식이 아니에요. (예: 010-1234-5678)';
-    case 'auth/invalid-verification-code':
-      return '인증번호가 올바르지 않아요. 다시 확인해 주세요.';
-    case 'auth/code-expired':
-      return '인증번호 유효 시간이 지났어요. 인증번호를 다시 받아 주세요.';
-    case 'auth/captcha-check-failed':
-      return '보안 확인(reCAPTCHA)에 실패했어요. 페이지를 새로고침한 뒤 다시 시도해 주세요.';
     case 'auth/unauthorized-domain': {
       const currentHost =
         typeof window !== 'undefined' ? window.location.hostname : '알 수 없음';
@@ -188,45 +138,11 @@ export function translateAuthError(error: unknown): string {
     case 'auth/too-many-requests':
       return '요청이 너무 많아요. 잠시 후 다시 시도해 주세요.';
     case 'auth/popup-closed-by-user':
-      return '로그인이 취소되었어요.';
+      return '구글 로그인이 취소되었어요.';
     case 'auth/requires-recent-login':
-      return '보안을 위해 다시 인증한 뒤 진행해 주세요.';
+      return '보안을 위해 다시 로그인한 뒤 진행해 주세요.';
     default:
       return error instanceof Error ? error.message : '인증 처리 중 오류가 발생했어요.';
-  }
-}
-
-export function createRecaptchaVerifier(containerId: string): RecaptchaVerifier {
-  auth.languageCode = 'ko';
-  return new RecaptchaVerifier(auth, containerId, {
-    size: 'invisible',
-  });
-}
-
-export async function sendPhoneOtp(
-  rawPhone: string,
-  verifier: RecaptchaVerifier
-): Promise<ConfirmationResult> {
-  const e164Phone = formatKoreanPhoneToE164(rawPhone);
-  try {
-    return await signInWithPhoneNumber(auth, e164Phone, verifier);
-  } catch (error) {
-    throw new Error(translateAuthError(error));
-  }
-}
-
-export async function confirmPhoneOtp(
-  confirmation: ConfirmationResult,
-  code: string
-): Promise<void> {
-  const trimmed = code.trim();
-  if (trimmed.length < 6) {
-    throw new Error('6자리 인증번호를 입력해 주세요.');
-  }
-  try {
-    await confirmation.confirm(trimmed);
-  } catch (error) {
-    throw new Error(translateAuthError(error));
   }
 }
 
@@ -323,9 +239,7 @@ export async function loginWithGoogle(): Promise<void> {
   }
 }
 
-export async function completeExternalProfile(
-  input: ExternalCompleteProfileInput
-): Promise<void> {
+export async function completeGoogleProfile(input: GoogleCompleteProfileInput): Promise<void> {
   const user = auth.currentUser;
   if (!user) throw new Error('로그인이 필요해요.');
   const clean = validateProfileFields(input);
@@ -341,8 +255,6 @@ export async function completeExternalProfile(
     throw new Error('이미 사용 중인 아이디예요. 다른 아이디를 입력해 주세요.');
   }
 
-  const isPhoneAuth = user.providerData.some((p) => p.providerId === 'phone');
-  const authProvider: AuthProviderType = isPhoneAuth && !user.email ? 'phone' : 'google';
   const storagePath = await uploadStudentIdPhoto(user.uid, input.studentIdPhotoBlob);
 
   try {
@@ -354,7 +266,7 @@ export async function completeExternalProfile(
     batch.set(doc(db, 'users', user.uid), {
       uid: user.uid,
       username: clean.username,
-      authProvider,
+      authProvider: 'google',
       email: (user.email || `${clean.username}@${USERNAME_EMAIL_DOMAIN}`).slice(0, 120),
       name: clean.name,
       phone: clean.phone,
@@ -471,31 +383,18 @@ export async function changeMyPassword(
 
 export async function deleteMyAccount(
   profile: UserProfile | null,
-  options?: {
-    currentPassword?: string;
-    phoneConfirmation?: ConfirmationResult;
-    phoneCode?: string;
-  }
+  currentPassword?: string
 ): Promise<void> {
   const user = auth.currentUser;
   if (!user) throw new Error('로그인이 필요해요.');
 
-  // 1. Re-authenticate based on provider
   try {
     if (profile?.authProvider === 'password' && user.email) {
-      if (!options?.currentPassword) {
+      if (!currentPassword) {
         throw new Error('계정 탈퇴를 위해 현재 비밀번호를 입력해 주세요.');
       }
-      const cred = EmailAuthProvider.credential(user.email, options.currentPassword);
+      const cred = EmailAuthProvider.credential(user.email, currentPassword);
       await reauthenticateWithCredential(user, cred);
-    } else if (profile?.authProvider === 'phone') {
-      if (options?.phoneConfirmation && options?.phoneCode) {
-        const cred = PhoneAuthProvider.credential(
-          options.phoneConfirmation.verificationId,
-          options.phoneCode.trim()
-        );
-        await reauthenticateWithCredential(user, cred);
-      }
     } else if (user.providerData.some((p) => p.providerId === 'google.com')) {
       await reauthenticateWithPopup(user, googleProvider);
     }
@@ -503,7 +402,6 @@ export async function deleteMyAccount(
     throw new Error(translateAuthError(error));
   }
 
-  // 2. Leave any open room before removing user document
   try {
     const openRoomsSnap = await getDocs(
       query(
@@ -519,7 +417,6 @@ export async function deleteMyAccount(
     // Proceed even if no open rooms
   }
 
-  // 3. Delete Storage photo, legacy private doc, username reservation, and user profile
   try {
     await deleteStudentIdPhotoFromStorage(user.uid).catch(() => undefined);
     await deleteDoc(doc(db, 'users', user.uid, 'private', 'studentId')).catch(() => undefined);
@@ -533,7 +430,6 @@ export async function deleteMyAccount(
     handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}`);
   }
 
-  // 4. Delete Firebase Auth account
   try {
     await deleteUser(user);
   } catch (error) {

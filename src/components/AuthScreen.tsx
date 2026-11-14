@@ -1,5 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { ConfirmationResult, RecaptchaVerifier } from 'firebase/auth';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Camera,
@@ -9,66 +8,49 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Phone,
   ShieldCheck,
   UserPlus,
 } from 'lucide-react';
 import {
-  completeExternalProfile,
-  confirmPhoneOtp,
-  createRecaptchaVerifier,
-  formatE164ToKoreanDisplay,
+  completeGoogleProfile,
   loginWithGoogle,
   loginWithUsername,
   logoutUser,
-  sendPhoneOtp,
   signUpWithUsername,
 } from '../lib/authService';
 import { compressFileToBlob } from '../lib/imageUtils';
 import { BANKS, Gender, LIMITS } from '../types';
 
 interface AuthScreenProps {
-  externalPendingUser: {
+  googlePendingUser: {
     uid: string;
     email: string | null;
     displayName: string | null;
-    phoneNumber: string | null;
   } | null;
   isAdminEmail?: boolean;
   onOpenAdminPage?: () => void;
 }
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({
-  externalPendingUser,
+  googlePendingUser,
   isAdminEmail,
   onOpenAdminPage,
 }) => {
-  const [mode, setMode] = useState<'login' | 'signup'>(externalPendingUser ? 'signup' : 'login');
-  const [authMethod, setAuthMethod] = useState<'password' | 'phone'>('password');
+  const [mode, setMode] = useState<'login' | 'signup'>(googlePendingUser ? 'signup' : 'login');
 
-  // Password login state
+  // Login state
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPw, setShowLoginPw] = useState(false);
 
-  // Phone OTP state (shared for login & signup OTP step)
-  const [otpPhone, setOtpPhone] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
-  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
-
-  // Signup / External profile completion state
-  const [name, setName] = useState(externalPendingUser?.displayName || '');
+  // Signup / Google completion state
+  const [name, setName] = useState(googlePendingUser?.displayName || '');
   const [username, setUsername] = useState(
-    externalPendingUser ? `hallym_${externalPendingUser.uid.slice(0, 6)}` : ''
+    googlePendingUser ? `hallym_${googlePendingUser.uid.slice(0, 6)}` : ''
   );
   const [password, setPassword] = useState('');
   const [showSignupPw, setShowSignupPw] = useState(false);
-  const [phone, setPhone] = useState(
-    externalPendingUser?.phoneNumber
-      ? formatE164ToKoreanDisplay(externalPendingUser.phoneNumber)
-      : ''
-  );
+  const [phone, setPhone] = useState('');
   const [gender, setGender] = useState<Gender>('male');
   const [bankName, setBankName] = useState<string>(BANKS[0]);
   const [customBankName, setCustomBankName] = useState('');
@@ -82,36 +64,24 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const isExternalCompletion = Boolean(externalPendingUser);
-  const hasVerifiedPhone = Boolean(externalPendingUser?.phoneNumber);
+  const isGoogleCompletion = Boolean(googlePendingUser);
   const resolvedBankName = bankName === '직접입력' ? customBankName : bankName;
 
   useEffect(() => {
-    if (externalPendingUser) {
+    if (googlePendingUser) {
       setMode('signup');
-      if (externalPendingUser.displayName && !name) {
-        setName(externalPendingUser.displayName);
+      if (googlePendingUser.displayName && !name) {
+        setName(googlePendingUser.displayName);
       }
-      if (externalPendingUser.phoneNumber) {
-        setPhone(formatE164ToKoreanDisplay(externalPendingUser.phoneNumber));
-      }
-      setUsername(`hallym_${externalPendingUser.uid.slice(0, 6)}`);
+      setUsername(`hallym_${googlePendingUser.uid.slice(0, 6)}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [externalPendingUser?.uid]);
+  }, [googlePendingUser?.uid]);
 
   useEffect(() => {
     return () => {
       if (studentIdPreviewUrl) {
         URL.revokeObjectURL(studentIdPreviewUrl);
-      }
-      if (recaptchaRef.current) {
-        try {
-          recaptchaRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaRef.current = null;
       }
     };
   }, [studentIdPreviewUrl]);
@@ -132,7 +102,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
   };
 
-  const handlePasswordLoginSubmit = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -140,54 +110,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       await loginWithUsername(loginUsername, loginPassword);
     } catch (err) {
       setError(err instanceof Error ? err.message : '로그인에 실패했어요.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSendPhoneOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      if (recaptchaRef.current) {
-        try {
-          recaptchaRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaRef.current = null;
-      }
-      const verifier = createRecaptchaVerifier('auth-recaptcha-container');
-      recaptchaRef.current = verifier;
-      const result = await sendPhoneOtp(otpPhone, verifier);
-      setConfirmationResult(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '인증번호를 보내지 못했어요.');
-      if (recaptchaRef.current) {
-        try {
-          recaptchaRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaRef.current = null;
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleConfirmPhoneOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!confirmationResult) return;
-    setError('');
-    setLoading(true);
-    try {
-      await confirmPhoneOtp(confirmationResult, otpCode);
-      setConfirmationResult(null);
-      setOtpCode('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '전화번호 인증에 실패했어요.');
     } finally {
       setLoading(false);
     }
@@ -218,8 +140,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
     setLoading(true);
     try {
-      if (isExternalCompletion) {
-        await completeExternalProfile({
+      if (isGoogleCompletion) {
+        await completeGoogleProfile({
           name,
           username,
           phone,
@@ -253,8 +175,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
   return (
     <div className="min-h-screen bg-[#F4F9FF] flex flex-col justify-center px-4 py-8 sm:px-6">
-      <div id="auth-recaptcha-container" />
-
       <div className="w-full max-w-md mx-auto">
         {/* Brand Header */}
         <div className="mb-6 text-center">
@@ -288,15 +208,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
         {/* Main Card */}
         <div className="bg-white border border-[#D4E4F7] rounded-3xl p-6 shadow-sm">
-          {!isExternalCompletion && (
-            <div className="grid grid-cols-2 gap-1 p-1 bg-[#EBF4FF] rounded-2xl mb-5">
+          {!isGoogleCompletion && (
+            <div className="grid grid-cols-2 gap-1 p-1 bg-[#EBF4FF] rounded-2xl mb-6">
               <button
                 type="button"
                 onClick={() => {
                   setMode('login');
                   setError('');
-                  setConfirmationResult(null);
-                  setOtpCode('');
                 }}
                 className={`min-h-[44px] rounded-xl text-sm font-semibold transition-colors ${
                   mode === 'login'
@@ -311,8 +229,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 onClick={() => {
                   setMode('signup');
                   setError('');
-                  setConfirmationResult(null);
-                  setOtpCode('');
                 }}
                 className={`min-h-[44px] rounded-xl text-sm font-semibold transition-colors ${
                   mode === 'signup'
@@ -325,53 +241,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             </div>
           )}
 
-          {/* Auth Method Selector (아이디/비밀번호 vs 전화번호 인증) */}
-          {!isExternalCompletion && (
-            <div className="grid grid-cols-2 gap-2 mb-5">
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMethod('password');
-                  setError('');
-                  setConfirmationResult(null);
-                  setOtpCode('');
-                }}
-                className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold transition-colors ${
-                  authMethod === 'password'
-                    ? 'bg-[#F4F9FF] border-[#1D5CE5] text-[#1D5CE5]'
-                    : 'bg-white border-[#DCE9F8] text-[#435E8D]'
-                }`}
-              >
-                아이디 · 비밀번호
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMethod('phone');
-                  setError('');
-                  setConfirmationResult(null);
-                  setOtpCode('');
-                }}
-                className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold transition-colors ${
-                  authMethod === 'phone'
-                    ? 'bg-[#F4F9FF] border-[#1D5CE5] text-[#1D5CE5]'
-                    : 'bg-white border-[#DCE9F8] text-[#435E8D]'
-                }`}
-              >
-                전화번호 인증
-              </button>
-            </div>
-          )}
-
-          {isExternalCompletion && (
+          {isGoogleCompletion && (
             <div className="mb-5 pb-4 border-b border-[#E2ECF9]">
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-lg font-bold text-[#0D1B3E]">추가 정보 입력</h2>
                   <p className="text-xs text-[#435E8D] mt-0.5">
-                    {externalPendingUser?.email ||
-                      formatE164ToKoreanDisplay(externalPendingUser?.phoneNumber)}{' '}
-                    · 학생 확인 후 승인되면 이용할 수 있어요
+                    {googlePendingUser?.email} · 학생 확인 후 승인되면 이용할 수 있어요
                   </p>
                 </div>
                 <button
@@ -395,108 +271,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             </div>
           )}
 
-          {/* Phone OTP Flow (for both Login & Sign-Up before profile completion) */}
-          {!isExternalCompletion && authMethod === 'phone' ? (
-            <div className="space-y-4">
-              <p className="text-xs text-[#435E8D] leading-relaxed">
-                {mode === 'login'
-                  ? '가입한 전화번호로 인증번호를 받아 로그인해요.'
-                  : '먼저 휴대폰 번호를 인증하면 회원 정보 입력 화면으로 이어집니다.'}
-              </p>
-
-              {!confirmationResult ? (
-                <form onSubmit={handleSendPhoneOtp} className="space-y-4">
-                  <div>
-                    <label htmlFor="otp-phone" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
-                      전화번호
-                    </label>
-                    <input
-                      id="otp-phone"
-                      type="tel"
-                      required
-                      value={otpPhone}
-                      onChange={(e) => setOtpPhone(e.target.value)}
-                      placeholder="010-0000-0000"
-                      className="w-full min-h-[46px] px-3.5 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-sm text-[#0D1B3E] tabular-nums"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <Phone className="w-4 h-4" />
-                    {loading ? '인증번호 전송 중...' : '인증번호 받기'}
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleConfirmPhoneOtp} className="space-y-4">
-                  <div className="rounded-xl bg-[#F4F9FF] border border-[#DCE9F8] px-3.5 py-2.5 text-xs text-[#0D1B3E] flex items-center justify-between">
-                    <span className="tabular-nums font-medium">{otpPhone}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setConfirmationResult(null);
-                        setOtpCode('');
-                      }}
-                      className="text-[#1D5CE5] font-semibold"
-                    >
-                      번호 변경
-                    </button>
-                  </div>
-
-                  <div>
-                    <label htmlFor="otp-code" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
-                      인증번호 6자리
-                    </label>
-                    <input
-                      id="otp-code"
-                      type="text"
-                      inputMode="numeric"
-                      required
-                      maxLength={6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="6자리 숫자 입력"
-                      className="w-full min-h-[46px] px-3.5 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-base font-bold tracking-widest text-[#0D1B3E] tabular-nums"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading || otpCode.length < 6}
-                    className="w-full min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-50 text-white text-sm font-semibold transition-colors"
-                  >
-                    {loading
-                      ? '확인 중...'
-                      : mode === 'login'
-                      ? '인증하고 로그인'
-                      : '인증하고 다음 단계로'}
-                  </button>
-                </form>
-              )}
-
-              <div className="relative my-4 flex items-center">
-                <div className="flex-grow border-t border-[#E2ECF9]" />
-                <span className="px-3 text-xs text-[#5B759E]">또는</span>
-                <div className="flex-grow border-t border-[#E2ECF9]" />
-              </div>
-
-              <button
-                type="button"
-                disabled={loading}
-                onClick={handleGoogleLogin}
-                className="w-full min-h-[46px] px-4 rounded-xl border border-[#C6DCF7] bg-white hover:bg-[#F4F9FF] text-[#0D1B3E] text-sm font-semibold flex items-center justify-center gap-2.5 transition-colors"
-              >
-                <span className="w-5 h-5 rounded-full bg-[#EBF4FF] text-[#1D5CE5] flex items-center justify-center text-xs font-bold">
-                  G
-                </span>
-                구글 계정으로 로그인
-              </button>
-            </div>
-          ) : mode === 'login' && !isExternalCompletion ? (
-            <form onSubmit={handlePasswordLoginSubmit} className="space-y-4">
+          {mode === 'login' && !isGoogleCompletion ? (
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
                 <label htmlFor="login-username" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
                   아이디
@@ -601,7 +377,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 </div>
               </div>
 
-              {!isExternalCompletion && (
+              {!isGoogleCompletion && (
                 <div>
                   <label htmlFor="signup-password" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
                     비밀번호
@@ -632,20 +408,17 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="signup-phone" className="block text-xs font-semibold text-[#0D1B3E] mb-1.5">
-                    전화번호 {hasVerifiedPhone && '(인증됨)'}
+                    전화번호
                   </label>
                   <input
                     id="signup-phone"
                     type="tel"
                     required
-                    readOnly={hasVerifiedPhone}
                     maxLength={LIMITS.PHONE_MAX}
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="010-0000-0000"
-                    className={`w-full min-h-[44px] px-3.5 rounded-xl border border-[#D4E4F7] text-sm text-[#0D1B3E] tabular-nums ${
-                      hasVerifiedPhone ? 'bg-[#EBF4FF] font-semibold' : 'bg-[#F8FBFF]'
-                    }`}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D4E4F7] bg-[#F8FBFF] text-sm text-[#0D1B3E] tabular-nums"
                   />
                 </div>
 
@@ -845,12 +618,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 <UserPlus className="w-4 h-4" />
                 {loading
                   ? '가입 처리 중...'
-                  : isExternalCompletion
+                  : isGoogleCompletion
                   ? '가입 신청 완료하기'
                   : '회원 가입'}
               </button>
 
-              {!isExternalCompletion && (
+              {!isGoogleCompletion && (
                 <>
                   <div className="relative my-3 flex items-center">
                     <div className="flex-grow border-t border-[#E2ECF9]" />
