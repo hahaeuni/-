@@ -321,8 +321,8 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
     if (!departure || !destination) return;
     const departureAtMs = selectedTime.getTime();
     const now = Date.now();
-    if (departureAtMs <= now + 30 * 1000) {
-      setError('출발 시간은 현재 시각 이후로 선택해 주세요.');
+    if (departureAtMs <= now + 60 * 1000) {
+      setError('출발 시간은 현재 시각보다 최소 1분 이후로 선택해 주세요.');
       return;
     }
     if (!locationPhotoBlob && departureAtMs - now <= 5 * 60 * 1000) {

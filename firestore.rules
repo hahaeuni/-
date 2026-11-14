@@ -148,22 +148,11 @@ service cloud.firestore {
         data.currentParticipants is int && data.currentParticipants >= 1 && data.currentParticipants <= data.maxParticipants &&
         data.participantIds is list && data.participantIds.size() == data.currentParticipants && data.participantIds.size() >= 1 && data.participantIds.size() <= 4 && data.participantIds[0] is string &&
         data.participantNames is list && data.participantNames.size() == data.currentParticipants && data.participantNames.size() >= 1 && data.participantNames.size() <= 4 && data.participantNames[0] is string &&
-        data.departureMinutes is int && data.departureMinutes >= 1 && data.departureMinutes <= 1440 &&
+        data.departureMinutes is number && data.departureMinutes >= 1 && data.departureMinutes <= 1440 &&
         data.departureAt is timestamp &&
         data.status in ['open', 'closed', 'settled', 'completed', 'expired'] &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
-    }
-
-    function roomSettingsUnchanged() {
-      return incoming().departure == existing().departure &&
-        incoming().destination == existing().destination &&
-        incoming().genderCondition == existing().genderCondition &&
-        incoming().maxParticipants == existing().maxParticipants &&
-        ((!('isFlexibleCapacity' in existing()) && !('isFlexibleCapacity' in incoming())) ||
-          (('isFlexibleCapacity' in existing()) && ('isFlexibleCapacity' in incoming()) && incoming().isFlexibleCapacity == existing().isFlexibleCapacity)) &&
-        incoming().departureMinutes == existing().departureMinutes &&
-        incoming().departureAt == existing().departureAt;
     }
 
     function isValidSettlement(data) {
@@ -297,144 +286,117 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(roomId) && isValidTaxiRoom(incoming()) &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        (existing().status in ['open', 'closed', 'settled'] || isAdmin()) &&
         (
           isAdmin() ||
           (
+            existing().status in ['open', 'closed', 'settled'] &&
             isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'open' &&
-            existing().departureAt > request.time &&
-            !(request.auth.uid in existing().participantIds) &&
-            existing().currentParticipants < existing().maxParticipants &&
-            (existing().genderCondition == 'any' || existing().genderCondition == userDoc(request.auth.uid).gender) &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().currentParticipants == existing().currentParticipants + 1 &&
-            incoming().participantIds.hasAll(existing().participantIds) &&
-            incoming().participantNames.hasAll(existing().participantNames) &&
-            request.auth.uid in incoming().participantIds &&
-            incoming().status == (incoming().currentParticipants == existing().maxParticipants ? 'closed' : 'open') &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'currentParticipants', 'participantIds', 'participantNames', 'status', 'updatedAt'
-            ])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'open' &&
-            existing().currentParticipants > 1 &&
-            request.auth.uid in existing().participantIds &&
-            !(request.auth.uid in incoming().participantIds) &&
-            existing().participantIds.hasAll(incoming().participantIds) &&
-            existing().participantNames.hasAll(incoming().participantNames) &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().currentParticipants == existing().currentParticipants - 1 &&
-            incoming().hostId == incoming().participantIds[0] &&
-            incoming().hostName == incoming().participantNames[0] &&
-            incoming().status == 'open' &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'hostId', 'hostName', 'currentParticipants', 'participantIds', 'participantNames', 'updatedAt'
-            ])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'open' &&
-            existing().currentParticipants == 1 &&
-            existing().hostId == request.auth.uid &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().status == 'expired' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'open' &&
-            request.time >= existing().departureAt &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().status == 'expired' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'open' &&
-            existing().hostId == request.auth.uid &&
-            ('isFlexibleCapacity' in existing()) &&
-            existing().isFlexibleCapacity == true &&
-            existing().currentParticipants >= 2 &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().status == 'closed' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status in ['open', 'closed'] &&
-            existing().hostId == request.auth.uid &&
-            request.time <= existing().departureAt - duration.value(5, 'm') &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().status == existing().status &&
-            incoming().locationPhotoUrl.size() >= 10 &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['locationPhotoUrl', 'updatedAt'])
-          ) ||
-          (
-            isApprovedUser() &&
-            existing().status in ['open', 'closed'] &&
-            existing().hostId == request.auth.uid &&
-            request.time < existing().departureAt &&
-            incoming().departureAt > request.time &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().maxParticipants >= existing().currentParticipants &&
             (
-              incoming().genderCondition == existing().genderCondition ||
-              incoming().genderCondition == 'any' ||
-              existing().currentParticipants == 1
-            ) &&
-            (incoming().genderCondition == 'any' || incoming().genderCondition == userDoc(request.auth.uid).gender) &&
-            incoming().status == (
-              existing().currentParticipants >= incoming().maxParticipants
-                ? 'closed'
-                : (existing().status == 'open' || incoming().maxParticipants > existing().maxParticipants ? 'open' : 'closed')
-            ) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'departure', 'destination', 'genderCondition', 'maxParticipants',
-              'isFlexibleCapacity', 'departureMinutes', 'departureAt', 'status', 'updatedAt'
-            ])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'closed' &&
-            existing().hostId == request.auth.uid &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().status == 'settled' &&
-            existsAfter(/databases/$(database)/documents/rooms/$(roomId)/settlement/info) &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-          ) ||
-          (
-            isApprovedUser() &&
-            roomSettingsUnchanged() &&
-            existing().status == 'settled' &&
-            existing().hostId == request.auth.uid &&
-            incoming().hostId == existing().hostId &&
-            incoming().hostName == existing().hostName &&
-            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
-            incoming().status == 'completed' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              // 1. Host manually closes flexible capacity open room (min 2 participants)
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status == 'open' &&
+                ('isFlexibleCapacity' in existing()) &&
+                existing().isFlexibleCapacity == true &&
+                existing().currentParticipants >= 2 &&
+                incoming().status == 'closed' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) ||
+              // 2. Host sends settlement info (closed -> settled with atomic settlement doc)
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status == 'closed' &&
+                incoming().status == 'settled' &&
+                existsAfter(/databases/$(database)/documents/rooms/$(roomId)/settlement/info) &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) ||
+              // 3. Host completes settlement (settled -> completed)
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status == 'settled' &&
+                incoming().status == 'completed' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) ||
+              // 4. Host updates room settings before departure (or updates closed room schedule)
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status in ['open', 'closed'] &&
+                (existing().status == 'closed' || request.time < existing().departureAt) &&
+                incoming().departureAt > request.time &&
+                incoming().maxParticipants >= existing().currentParticipants &&
+                (
+                  incoming().genderCondition == existing().genderCondition ||
+                  incoming().genderCondition == 'any' ||
+                  existing().currentParticipants == 1
+                ) &&
+                (incoming().genderCondition == 'any' || incoming().genderCondition == userDoc(request.auth.uid).gender) &&
+                incoming().status == (
+                  existing().currentParticipants >= incoming().maxParticipants
+                    ? 'closed'
+                    : (existing().status == 'open' || incoming().maxParticipants > existing().maxParticipants ? 'open' : 'closed')
+                ) &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'departure', 'destination', 'genderCondition', 'maxParticipants',
+                  'isFlexibleCapacity', 'departureMinutes', 'departureAt', 'status', 'updatedAt'
+                ])
+              ) ||
+              // 5. Host uploads or updates current location photo up to 5 minutes before departure
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status in ['open', 'closed'] &&
+                request.time + duration.value(5, 'm') <= existing().departureAt &&
+                incoming().status == existing().status &&
+                incoming().locationPhotoUrl.size() >= 10 &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['locationPhotoUrl', 'updatedAt'])
+              ) ||
+              // 6. Host expires 1-person open room
+              (
+                existing().hostId == request.auth.uid &&
+                existing().status == 'open' &&
+                existing().currentParticipants == 1 &&
+                incoming().status == 'expired' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) ||
+              // 7. Join open room
+              (
+                existing().status == 'open' &&
+                existing().departureAt > request.time &&
+                !(request.auth.uid in existing().participantIds) &&
+                existing().currentParticipants < existing().maxParticipants &&
+                (existing().genderCondition == 'any' || existing().genderCondition == userDoc(request.auth.uid).gender) &&
+                incoming().currentParticipants == existing().currentParticipants + 1 &&
+                incoming().participantIds.hasAll(existing().participantIds) &&
+                incoming().participantNames.hasAll(existing().participantNames) &&
+                request.auth.uid in incoming().participantIds &&
+                incoming().status == (incoming().currentParticipants == existing().maxParticipants ? 'closed' : 'open') &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'currentParticipants', 'participantIds', 'participantNames', 'status', 'updatedAt'
+                ])
+              ) ||
+              // 8. Leave open room (host handoff supported)
+              (
+                existing().status == 'open' &&
+                existing().currentParticipants > 1 &&
+                request.auth.uid in existing().participantIds &&
+                !(request.auth.uid in incoming().participantIds) &&
+                existing().participantIds.hasAll(incoming().participantIds) &&
+                existing().participantNames.hasAll(incoming().participantNames) &&
+                incoming().currentParticipants == existing().currentParticipants - 1 &&
+                incoming().hostId == incoming().participantIds[0] &&
+                incoming().hostName == incoming().participantNames[0] &&
+                incoming().status == 'open' &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'hostId', 'hostName', 'currentParticipants', 'participantIds', 'participantNames', 'updatedAt'
+                ])
+              ) ||
+              // 9. Expire open room past departureAt
+              (
+                existing().status == 'open' &&
+                request.time >= existing().departureAt &&
+                incoming().status == 'expired' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              )
+            )
           )
         );
 
@@ -458,18 +420,17 @@ service cloud.firestore {
         allow list: if isBootstrappedAdmin();
 
         allow create: if isSignedIn() && isValidId(roomId) && docId == 'info' &&
-          isApprovedUser() &&
+          (isAdmin() || isApprovedUser()) &&
           isValidSettlement(incoming()) &&
           incoming().roomId == roomId &&
           incoming().hostId == request.auth.uid &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid &&
-          get(/databases/$(database)/documents/rooms/$(roomId)).data.status in ['closed', 'settled'] &&
-          getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'settled';
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status in ['closed', 'settled'];
 
         allow update: if isSignedIn() && isValidId(roomId) && docId == 'info' &&
-          isApprovedUser() &&
+          (isAdmin() || isApprovedUser()) &&
           isValidSettlement(incoming()) &&
           incoming().roomId == existing().roomId &&
           incoming().hostId == existing().hostId &&

@@ -9,16 +9,74 @@ import {
   setDoc,
   Timestamp,
   where,
-  writeBatch,
 } from 'firebase/firestore';
 import {
   GenderCondition,
+  LIMITS,
   LocationOption,
   TaxiRoom,
   UserProfile,
 } from '../types';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { deleteRoomLocationPhoto, uploadRoomLocationPhoto } from './storageService';
+
+function summarizeRoomDebug(
+  action: string,
+  uid: string,
+  room: Record<string, unknown> | null,
+  extra?: string
+): string {
+  const authUid = auth.currentUser?.uid ?? 'none';
+  if (!room) {
+    return `${action}|authMatch=${authUid === uid}|room=missing${extra ? `|${extra}` : ''}`;
+  }
+  const requiredKeys = [
+    'hostId', 'hostName', 'departure', 'destination', 'locationPhotoUrl',
+    'genderCondition', 'maxParticipants', 'currentParticipants',
+    'participantIds', 'participantNames', 'departureMinutes',
+    'departureAt', 'status', 'createdAt', 'updatedAt',
+  ];
+  const allowedKeys = new Set([...requiredKeys, 'isFlexibleCapacity']);
+  const roomKeys = Object.keys(room);
+  const miss = requiredKeys.filter((k) => !(k in room));
+  const extraK = roomKeys.filter((k) => !allowedKeys.has(k));
+  const pIds = Array.isArray(room.participantIds) ? room.participantIds : null;
+  const pNames = Array.isArray(room.participantNames) ? room.participantNames : null;
+  const depAt = room.departureAt as { toMillis?: () => number } | undefined;
+  const depMs = depAt && typeof depAt.toMillis === 'function' ? depAt.toMillis() : null;
+  const photo = typeof room.locationPhotoUrl === 'string' ? room.locationPhotoUrl : null;
+  return [
+    action,
+    `authOk=${authUid === uid}`,
+    `hostOk=${room.hostId === authUid}`,
+    `st=${String(room.status)}`,
+    `flex=${typeof room.isFlexibleCapacity}:${String(room.isFlexibleCapacity)}`,
+    `cnt=${String(room.currentParticipants)}/${String(room.maxParticipants)}`,
+    `ids=${pIds ? pIds.length : 'null'}:${pNames ? pNames.length : 'null'}`,
+    `depMin=${typeof room.departureMinutes}:${String(room.departureMinutes)}`,
+    `exp=${depMs !== null ? depMs <= Date.now() : 'none'}`,
+    `photo=${photo !== null ? photo.length : typeof room.locationPhotoUrl}`,
+    `miss=${miss.join(',') || 'none'}`,
+    `extra=${extraK.join(',') || 'none'}`,
+    ...(extra ? [extra] : []),
+  ].join('|');
+}
+
+function isPermissionDeniedError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = String((error as { code?: unknown }).code || '');
+    if (code === 'permission-denied' || code === 'firestore/permission-denied') {
+      return true;
+    }
+  }
+  if (error instanceof Error) {
+    return (
+      error.message.includes('Missing or insufficient permissions') ||
+      error.message.includes('permission-denied')
+    );
+  }
+  return false;
+}
 
 export async function findActiveUserRoom(uid: string): Promise<TaxiRoom | null> {
   const path = 'rooms';
@@ -78,8 +136,8 @@ export async function createRoom(
     throw new Error('본인 성별과 맞지 않는 성별 조건의 방은 만들 수 없어요.');
   }
   const nowMs = Date.now();
-  if (!Number.isFinite(input.departureAtMs) || input.departureAtMs <= nowMs + 30 * 1000) {
-    throw new Error('출발 시간은 현재 시각 이후로 선택해 주세요.');
+  if (!Number.isFinite(input.departureAtMs) || input.departureAtMs <= nowMs + 60 * 1000) {
+    throw new Error('출발 시간은 현재 시각보다 최소 1분 이후로 선택해 주세요.');
   }
   if (!hasPhoto && input.departureAtMs - nowMs <= 5 * 60 * 1000) {
     throw new Error('위치 사진 없이 방을 만들려면 출발 시간이 최소 5분 이후여야 해요.');
@@ -125,7 +183,10 @@ export async function createRoom(
     if (hasPhoto) {
       await deleteRoomLocationPhoto(roomRef.id);
     }
-    handleFirestoreError(error, OperationType.CREATE, `rooms/${roomRef.id}`);
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.CREATE, `rooms/${roomRef.id}`);
+    }
+    throw error;
   }
 }
 
@@ -140,6 +201,7 @@ export async function updateRoomLocationPhoto(
 
   const roomRef = doc(db, 'rooms', roomId);
   const locationPhotoUrl = await uploadRoomLocationPhoto(roomId, photoBlob);
+  let debugInfo = summarizeRoomDebug('updatePhoto', uid, null);
 
   try {
     await runTransaction(db, async (tx) => {
@@ -148,6 +210,7 @@ export async function updateRoomLocationPhoto(
         throw new Error('방을 찾을 수 없어요.');
       }
       const room = snap.data() as Omit<TaxiRoom, 'id'>;
+      debugInfo = summarizeRoomDebug('updatePhoto', uid, room as unknown as Record<string, unknown>);
       if (room.hostId !== uid) {
         throw new Error('모집자만 현재 위치 사진을 올릴 수 있어요.');
       }
@@ -164,10 +227,10 @@ export async function updateRoomLocationPhoto(
       });
     });
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`, debugInfo);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }
 
@@ -193,8 +256,8 @@ export async function updateRoomSettings(
     throw new Error('모집 인원은 2명에서 4명 사이로 설정해 주세요.');
   }
   const nowMs = Date.now();
-  if (!Number.isFinite(input.departureAtMs) || input.departureAtMs <= nowMs + 30 * 1000) {
-    throw new Error('출발 시간은 현재 시각 이후로 선택해 주세요.');
+  if (!Number.isFinite(input.departureAtMs) || input.departureAtMs <= nowMs + 60 * 1000) {
+    throw new Error('출발 시간은 현재 시각보다 최소 1분 이후로 선택해 주세요.');
   }
 
   const roomRef = doc(db, 'rooms', roomId);
@@ -202,6 +265,12 @@ export async function updateRoomSettings(
   const departureMinutes = Math.max(
     1,
     Math.min(1440, Math.round((input.departureAtMs - nowMs) / 60000))
+  );
+  let debugInfo = summarizeRoomDebug(
+    'updateSettings',
+    hostProfile.uid,
+    null,
+    `profSt=${hostProfile.status}`
   );
 
   try {
@@ -217,8 +286,8 @@ export async function updateRoomSettings(
       if (room.status !== 'open' && room.status !== 'closed') {
         throw new Error('이미 정산 중이거나 종료된 방은 수정할 수 없어요.');
       }
-      if (room.departureAt.toMillis() <= Date.now()) {
-        throw new Error('출발 시간이 지난 방은 수정할 수 없어요.');
+      if (room.status === 'open' && room.departureAt.toMillis() <= Date.now()) {
+        throw new Error('출발 시간이 지난 모집방은 수정할 수 없어요.');
       }
       if (input.maxParticipants < room.currentParticipants) {
         throw new Error(
@@ -240,6 +309,13 @@ export async function updateRoomSettings(
           ? 'open'
           : 'closed';
 
+      debugInfo = summarizeRoomDebug(
+        'updateSettings',
+        hostProfile.uid,
+        room as unknown as Record<string, unknown>,
+        `profSt=${hostProfile.status}|nextSt=${nextStatus}|nextMax=${input.maxParticipants}`
+      );
+
       tx.update(roomRef, {
         departure: input.departure,
         destination: input.destination,
@@ -253,10 +329,10 @@ export async function updateRoomSettings(
       });
     });
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`, debugInfo);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }
 
@@ -307,15 +383,16 @@ export async function joinRoom(roomId: string, profile: UserProfile): Promise<vo
       });
     });
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }
 
 export async function closeFlexibleRoom(roomId: string, uid: string): Promise<void> {
   const roomRef = doc(db, 'rooms', roomId);
+  let debugInfo = summarizeRoomDebug('closeFlexible', uid, null);
   try {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(roomRef);
@@ -323,6 +400,7 @@ export async function closeFlexibleRoom(roomId: string, uid: string): Promise<vo
         throw new Error('방을 찾을 수 없어요.');
       }
       const room = snap.data() as Omit<TaxiRoom, 'id'>;
+      debugInfo = summarizeRoomDebug('closeFlexible', uid, room as unknown as Record<string, unknown>);
       if (room.status !== 'open') {
         throw new Error('이미 마감되었거나 종료된 방이에요.');
       }
@@ -342,10 +420,10 @@ export async function closeFlexibleRoom(roomId: string, uid: string): Promise<vo
       });
     });
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`, debugInfo);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }
 
@@ -385,10 +463,10 @@ export async function leaveRoom(roomId: string, uid: string): Promise<void> {
       await deleteRoomLocationPhoto(roomId);
     }
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }
 
@@ -406,34 +484,101 @@ export async function sendRoomSettlement(
     throw new Error('정산 인원수가 올바르지 않아요.');
   }
 
-  const perPersonAmount = Math.ceil(fareInt / participantCount);
+  const bankName = (hostProfile.bankName || '').trim().slice(0, LIMITS.BANK_MAX);
+  const accountNumber = (hostProfile.accountNumber || '').trim().slice(0, LIMITS.ACCOUNT_MAX);
+  const accountHolder = (hostProfile.accountHolder || '').trim().slice(0, LIMITS.HOLDER_MAX);
+
+  if (
+    bankName.length < 1 ||
+    accountNumber.length < LIMITS.ACCOUNT_MIN ||
+    accountHolder.length < 1
+  ) {
+    throw new Error('내 정보에서 정산받을 계좌 정보(은행, 계좌번호, 예금주)를 먼저 확인해 주세요.');
+  }
+
+  const roomRef = doc(db, 'rooms', roomId);
+  const settlementRef = doc(db, 'rooms', roomId, 'settlement', 'info');
+  let debugInfo = summarizeRoomDebug(
+    'sendSettlement',
+    hostProfile.uid,
+    null,
+    `profSt=${hostProfile.status}`
+  );
 
   try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'rooms', roomId, 'settlement', 'info'), {
-      roomId,
-      hostId: hostProfile.uid,
-      totalFare: fareInt,
-      participantCount,
-      perPersonAmount,
-      bankName: hostProfile.bankName,
-      accountNumber: hostProfile.accountNumber,
-      accountHolder: hostProfile.accountHolder,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const roomSnap = await tx.get(roomRef);
+      if (!roomSnap.exists()) {
+        throw new Error('방을 찾을 수 없어요.');
+      }
+      const room = roomSnap.data() as Omit<TaxiRoom, 'id'>;
+      if (room.hostId !== hostProfile.uid) {
+        throw new Error('모집자만 계좌를 전송할 수 있어요.');
+      }
+      if (room.status !== 'closed') {
+        throw new Error('모집이 마감된 방만 계좌를 전송할 수 있어요.');
+      }
+      if (room.currentParticipants < 2 || room.currentParticipants > 4) {
+        throw new Error('정산 인원수가 올바르지 않아요.');
+      }
+
+      const activeCount = room.currentParticipants;
+      const perPersonAmount = Math.ceil(fareInt / activeCount);
+      const settlementSnap = await tx.get(settlementRef);
+
+      debugInfo = summarizeRoomDebug(
+        'sendSettlement',
+        hostProfile.uid,
+        room as unknown as Record<string, unknown>,
+        `profSt=${hostProfile.status}|settleExists=${settlementSnap.exists()}|fare=${fareInt}|per=${perPersonAmount}`
+      );
+
+      if (settlementSnap.exists()) {
+        tx.update(settlementRef, {
+          totalFare: fareInt,
+          participantCount: activeCount,
+          perPersonAmount,
+          bankName,
+          accountNumber,
+          accountHolder,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        tx.set(settlementRef, {
+          roomId,
+          hostId: hostProfile.uid,
+          totalFare: fareInt,
+          participantCount: activeCount,
+          perPersonAmount,
+          bankName,
+          accountNumber,
+          accountHolder,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      tx.update(roomRef, {
+        status: 'settled',
+        updatedAt: serverTimestamp(),
+      });
     });
-    batch.update(doc(db, 'rooms', roomId), {
-      status: 'settled',
-      updatedAt: serverTimestamp(),
-    });
-    await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `rooms/${roomId}/settlement/info`);
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `rooms/${roomId}/settlement/info`,
+        debugInfo
+      );
+    }
+    throw error;
   }
 }
 
 export async function completeRoomSettlement(roomId: string, uid: string): Promise<void> {
   const roomRef = doc(db, 'rooms', roomId);
+  let debugInfo = summarizeRoomDebug('completeSettlement', uid, null);
   try {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(roomRef);
@@ -441,6 +586,11 @@ export async function completeRoomSettlement(roomId: string, uid: string): Promi
         throw new Error('방을 찾을 수 없어요.');
       }
       const room = snap.data() as Omit<TaxiRoom, 'id'>;
+      debugInfo = summarizeRoomDebug(
+        'completeSettlement',
+        uid,
+        room as unknown as Record<string, unknown>
+      );
       if (room.hostId !== uid) {
         throw new Error('모집자만 정산 완료 처리를 할 수 있어요.');
       }
@@ -454,9 +604,9 @@ export async function completeRoomSettlement(roomId: string, uid: string): Promi
       });
     });
   } catch (error) {
-    if (error instanceof Error && !error.message.includes('Missing or insufficient permissions')) {
-      throw error;
+    if (isPermissionDeniedError(error)) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`, debugInfo);
     }
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
   }
 }

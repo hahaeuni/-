@@ -219,18 +219,43 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
 
   const formatActionError = (err: unknown, fallback: string): string => {
     if (!(err instanceof Error) || !err.message) return fallback;
-    if (err.message.trim().startsWith('{')) {
+    const raw = err.message.trim();
+
+    if (raw.includes('Quota exceeded')) {
+      return 'Firestore 일일 무료 사용량(Quota)을 초과했어요. 자정(태평양 표준시 기준)에 초기화되며, 바로 이용하려면 Firebase 콘솔에서 요금제를 확인해 주세요.';
+    }
+
+    if (raw.startsWith('{')) {
       try {
-        const parsed = JSON.parse(err.message) as { error?: string };
-        if (parsed?.error?.includes('Missing or insufficient permissions')) {
-          return '요청 권한이 없거나 방 상태가 이미 변경되었어요. 잠시 후 다시 확인해 주세요.';
+        const parsed = JSON.parse(raw) as {
+          error?: string;
+          path?: string;
+          debugInfo?: string;
+        };
+        const inner = parsed?.error || '';
+        if (inner.includes('Quota exceeded')) {
+          return 'Firestore 일일 무료 사용량(Quota)을 초과했어요. 자정(태평양 표준시 기준)에 초기화되며, 바로 이용하려면 Firebase 콘솔에서 요금제를 확인해 주세요.';
+        }
+        if (inner.includes('Missing or insufficient permissions') || inner.includes('permission-denied')) {
+          const details = [
+            inner,
+            parsed.path || '',
+            parsed.debugInfo || '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return `요청 권한이 없거나 방 상태가 변경되었어요. 새로고침 후 다시 시도해 주세요. (${details})`;
+        }
+        if (inner) {
+          return `${fallback} (${inner})`;
         }
       } catch {
         // Ignore JSON parse fallback
       }
       return fallback;
     }
-    return err.message;
+
+    return raw;
   };
 
   const handleJoin = async () => {
@@ -378,7 +403,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       setPendingPhotoBlob(null);
       setShowPhotoUploader(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '위치 사진을 등록하지 못했어요.');
+      setError(formatActionError(err, '위치 사진을 등록하지 못했어요.'));
     } finally {
       setUploadingPhoto(false);
     }
@@ -391,7 +416,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
     !effectiveExpired &&
     nowMs <= photoDeadlineMs;
   const canEditSettings =
-    isHost && (room.status === 'open' || room.status === 'closed') && !isExpired;
+    isHost && ((room.status === 'open' && !isExpired) || room.status === 'closed');
   const deadlineDate = new Date(photoDeadlineMs);
   const deadlineClock = `${deadlineDate.getHours().toString().padStart(2, '0')}시 ${deadlineDate
     .getMinutes()
@@ -423,8 +448,8 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       return;
     }
     const departureAtMs = editDepartureTime.getTime();
-    if (departureAtMs <= Date.now() + 30 * 1000) {
-      setEditError('출발 시간은 현재 시각 이후로 선택해 주세요.');
+    if (departureAtMs <= Date.now() + 60 * 1000) {
+      setEditError('출발 시간은 현재 시각보다 최소 1분 이후로 선택해 주세요.');
       return;
     }
     const isFlexibleCapacity = editCapacityChoice === 'any';
@@ -442,7 +467,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       });
       setShowEditModal(false);
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : '방 설정을 수정하지 못했어요.');
+      setEditError(formatActionError(err, '방 설정을 수정하지 못했어요.'));
     } finally {
       setSavingSettings(false);
     }
