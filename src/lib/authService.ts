@@ -441,13 +441,19 @@ export async function logoutUser(): Promise<void> {
   await signOut(auth);
 }
 
-export async function getStudentIdPhoto(userId: string): Promise<string | null> {
-  return fetchPrivateStudentIdPhotoUrl(userId);
+export async function getStudentIdPhoto(
+  userId: string,
+  studentIdPhotoPath?: string
+): Promise<string | null> {
+  return fetchPrivateStudentIdPhotoUrl(userId, studentIdPhotoPath);
 }
 
-export async function approveUserAccount(userId: string): Promise<void> {
+export async function approveUserAccount(
+  userId: string,
+  studentIdPhotoPath?: string
+): Promise<void> {
   const path = `users/${userId}`;
-  await deleteStudentIdPhotoFromStorage(userId);
+  await deleteStudentIdPhotoFromStorage(userId, studentIdPhotoPath);
   try {
     const batch = writeBatch(db);
     batch.update(doc(db, 'users', userId), {

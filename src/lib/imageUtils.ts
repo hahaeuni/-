@@ -7,7 +7,7 @@ function renderToCanvas(
   source: CanvasImageSource,
   srcWidth: number,
   srcHeight: number,
-  maxDimension = 1080
+  maxDimension = 960
 ): HTMLCanvasElement {
   const scale = Math.min(1, maxDimension / Math.max(srcWidth, srcHeight));
   const width = Math.max(1, Math.round(srcWidth * scale));
@@ -40,13 +40,13 @@ function canvasToCompressedBlob(canvas: HTMLCanvasElement): Promise<CompressedIm
         resolve({ blob, previewUrl });
       },
       'image/jpeg',
-      0.82
+      0.78
     );
   });
 }
 
 export async function compressFileToBlob(file: File): Promise<CompressedImageResult> {
-  if (!file.type.startsWith('image/')) {
+  if (file.type && !file.type.startsWith('image/')) {
     throw new Error('이미지 파일만 올릴 수 있어요.');
   }
   return new Promise((resolve, reject) => {

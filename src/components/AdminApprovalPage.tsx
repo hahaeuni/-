@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import {
   AlertCircle,
@@ -8,6 +8,7 @@ import {
   Image as ImageIcon,
   LogOut,
   Mail,
+  RefreshCw,
   Shield,
   Users,
   X,
@@ -29,6 +30,12 @@ interface AdminApprovalPageProps {
 
 type StatusFilter = 'all' | UserStatus;
 
+type PhotoState =
+  | { status: 'loading' }
+  | { status: 'ready'; url: string }
+  | { status: 'empty' }
+  | { status: 'error'; message: string };
+
 function formatCreatedAt(user: UserProfile): string {
   if (!user.createdAt) return '가입일 확인 중';
   const d = user.createdAt.toDate();
@@ -47,6 +54,10 @@ function formatStatusText(status: UserStatus): string {
   return '승인 대기';
 }
 
+function getPhotoVersionKey(user: UserProfile): string {
+  return `${user.uid}:${user.hasStudentIdPhoto ? '1' : '0'}:${user.studentIdPhotoPath || ''}`;
+}
+
 export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
   onBack,
   showLogout,
@@ -54,13 +65,74 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
 }) => {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [photos, setPhotos] = useState<Record<string, string | null>>({});
+  const [photoStates, setPhotoStates] = useState<Record<string, PhotoState>>({});
   const [loadingList, setLoadingList] = useState(true);
   const [busyUid, setBusyUid] = useState<string | null>(null);
   const [rejectingUid, setRejectingUid] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
   const [error, setError] = useState('');
+
+  const fetchedKeyRef = useRef<Record<string, string>>({});
+  const inFlightRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadPhotoForUser = useCallback(async (user: UserProfile, force = false) => {
+    const versionKey = getPhotoVersionKey(user);
+
+    if (user.status === 'approved' && !user.hasStudentIdPhoto) {
+      fetchedKeyRef.current[user.uid] = versionKey;
+      if (mountedRef.current) {
+        setPhotoStates((prev) => {
+          if (prev[user.uid]?.status === 'empty') return prev;
+          return { ...prev, [user.uid]: { status: 'empty' } };
+        });
+      }
+      return;
+    }
+
+    if (!force && fetchedKeyRef.current[user.uid] === versionKey) {
+      return;
+    }
+    if (inFlightRef.current.has(user.uid)) {
+      return;
+    }
+
+    inFlightRef.current.add(user.uid);
+    fetchedKeyRef.current[user.uid] = versionKey;
+
+    if (mountedRef.current) {
+      setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'loading' } }));
+    }
+
+    try {
+      const url = await getStudentIdPhoto(user.uid, user.studentIdPhotoPath);
+      if (!mountedRef.current) return;
+      if (url) {
+        setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'ready', url } }));
+      } else {
+        setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'empty' } }));
+      }
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const msg =
+        err instanceof Error ? err.message : '학생증 사진을 불러오지 못했어요.';
+      setError((prev) => prev || msg);
+      setPhotoStates((prev) => ({
+        ...prev,
+        [user.uid]: { status: 'error', message: msg },
+      }));
+    } finally {
+      inFlightRef.current.delete(user.uid);
+    }
+  }, []);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -74,31 +146,50 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
         });
         setAllUsers(list);
         setLoadingList(false);
-
-        list.forEach((u) => {
-          if (photos[u.uid] === undefined && u.hasStudentIdPhoto) {
-            void getStudentIdPhoto(u.uid)
-              .then((img) => {
-                setPhotos((prev) => ({ ...prev, [u.uid]: img }));
-              })
-              .catch((err) => {
-                setError((prev) =>
-                  prev || (err instanceof Error ? err.message : '학생증 사진을 불러오지 못했어요.')
-                );
-                setPhotos((prev) => ({ ...prev, [u.uid]: null }));
-              });
-          } else if (photos[u.uid] === undefined && !u.hasStudentIdPhoto) {
-            setPhotos((prev) => ({ ...prev, [u.uid]: null }));
-          }
-        });
       },
       (err) => {
         handleFirestoreError(err, OperationType.LIST, 'users');
       }
     );
     return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Prioritized bounded concurrency queue: load pending users first, max 4 at a time
+  useEffect(() => {
+    if (allUsers.length === 0) return;
+
+    const pendingQueue = allUsers.filter((u) => u.status === 'pending');
+    const otherQueue = allUsers.filter((u) => u.status !== 'pending');
+    const ordered = [...pendingQueue, ...otherQueue];
+
+    const toFetch = ordered.filter((u) => {
+      const key = getPhotoVersionKey(u);
+      return fetchedKeyRef.current[u.uid] !== key && !inFlightRef.current.has(u.uid);
+    });
+
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+    let cursor = 0;
+    const CONCURRENCY = 4;
+
+    const worker = async () => {
+      while (!cancelled) {
+        const idx = cursor++;
+        if (idx >= toFetch.length) break;
+        await loadPhotoForUser(toFetch[idx]);
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, toFetch.length) }, () =>
+      worker()
+    );
+    void Promise.all(workers);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allUsers, loadPhotoForUser]);
 
   const counts = useMemo(() => {
     return {
@@ -116,25 +207,41 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
 
   const handleOpenUserDetail = (user: UserProfile) => {
     setSelectedUser(user);
-    if (photos[user.uid] === undefined) {
-      void getStudentIdPhoto(user.uid)
-        .then((img) => {
-          setPhotos((prev) => ({ ...prev, [user.uid]: img }));
-        })
-        .catch(() => {
-          setPhotos((prev) => ({ ...prev, [user.uid]: null }));
-        });
+    const current = photoStates[user.uid];
+    if (!current || current.status === 'error') {
+      void loadPhotoForUser(user, true);
     }
   };
 
-  const handleApprove = async (uid: string) => {
+  const handleRetryPhoto = (e: React.MouseEvent, user: UserProfile) => {
+    e.stopPropagation();
     setError('');
-    setBusyUid(uid);
+    void loadPhotoForUser(user, true);
+  };
+
+  const handleImageElementError = (uid: string) => {
+    setPhotoStates((prev) => ({
+      ...prev,
+      [uid]: {
+        status: 'error',
+        message: '이미지를 표시하지 못했어요. 다시 불러오기를 눌러 주세요.',
+      },
+    }));
+  };
+
+  const handleApprove = async (user: UserProfile) => {
+    setError('');
+    setBusyUid(user.uid);
     try {
-      await approveUserAccount(uid);
-      setPhotos((prev) => ({ ...prev, [uid]: null }));
-      if (selectedUser?.uid === uid) {
-        setSelectedUser((prev) => (prev ? { ...prev, status: 'approved', hasStudentIdPhoto: false } : null));
+      await approveUserAccount(user.uid, user.studentIdPhotoPath);
+      fetchedKeyRef.current[user.uid] = `${user.uid}:0:`;
+      setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'empty' } }));
+      if (selectedUser?.uid === user.uid) {
+        setSelectedUser((prev) =>
+          prev
+            ? { ...prev, status: 'approved', hasStudentIdPhoto: false, studentIdPhotoPath: '' }
+            : null
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '승인 처리에 실패했어요.');
@@ -257,7 +364,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredUsers.map((applicant) => {
-            const photo = photos[applicant.uid];
+            const photoState = photoStates[applicant.uid];
             const isBusy = busyUid === applicant.uid;
 
             return (
@@ -265,69 +372,113 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                 key={applicant.uid}
                 className="bg-white border border-[#D4E4F7] hover:border-[#60A5FA] rounded-2xl p-5 flex flex-col justify-between gap-4 transition-colors"
               >
-                <button
-                  type="button"
-                  onClick={() => handleOpenUserDetail(applicant)}
-                  className="text-left space-y-3 w-full"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h3 className="text-base font-bold text-[#0D1B3E] truncate">
-                        {applicant.name}
-                      </h3>
-                      <p className="text-xs text-[#435E8D] mt-0.5 truncate">
-                        아이디 {applicant.username} · {formatGenderLabel(applicant.gender)}
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUserDetail(applicant)}
+                    className="text-left space-y-3 w-full"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="text-base font-bold text-[#0D1B3E] truncate">
+                          {applicant.name}
+                        </h3>
+                        <p className="text-xs text-[#435E8D] mt-0.5 truncate">
+                          아이디 {applicant.username} · {formatGenderLabel(applicant.gender)}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xs font-bold shrink-0 ${
+                          applicant.status === 'approved'
+                            ? 'text-[#1D5CE5]'
+                            : applicant.status === 'pending'
+                            ? 'text-[#0284C7]'
+                            : 'text-[#0D1B3E]'
+                        }`}
+                      >
+                        {formatStatusText(applicant.status)}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1 text-xs text-[#435E8D] bg-[#F4F9FF] rounded-xl p-3">
+                      <p className="flex items-center gap-1.5 truncate text-[#0D1B3E] font-medium">
+                        <Mail className="w-3.5 h-3.5 text-[#1D5CE5] shrink-0" />
+                        <span className="truncate">{applicant.email}</span>
+                      </p>
+                      <p className="flex items-center gap-1.5 tabular-nums">
+                        <Calendar className="w-3.5 h-3.5 text-[#1D5CE5] shrink-0" />
+                        <span>{formatCreatedAt(applicant)}</span>
                       </p>
                     </div>
-                    <span
-                      className={`text-xs font-bold shrink-0 ${
-                        applicant.status === 'approved'
-                          ? 'text-[#1D5CE5]'
-                          : applicant.status === 'pending'
-                          ? 'text-[#0284C7]'
-                          : 'text-[#0D1B3E]'
-                      }`}
-                    >
-                      {formatStatusText(applicant.status)}
-                    </span>
-                  </div>
+                  </button>
 
-                  <div className="space-y-1 text-xs text-[#435E8D] bg-[#F4F9FF] rounded-xl p-3">
-                    <p className="flex items-center gap-1.5 truncate text-[#0D1B3E] font-medium">
-                      <Mail className="w-3.5 h-3.5 text-[#1D5CE5] shrink-0" />
-                      <span className="truncate">{applicant.email}</span>
-                    </p>
-                    <p className="flex items-center gap-1.5 tabular-nums">
-                      <Calendar className="w-3.5 h-3.5 text-[#1D5CE5] shrink-0" />
-                      <span>{formatCreatedAt(applicant)}</span>
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] h-40 flex items-center justify-center">
-                    {photo === undefined ? (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleOpenUserDetail(applicant)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleOpenUserDetail(applicant);
+                      }
+                    }}
+                    className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] h-40 flex items-center justify-center cursor-pointer"
+                  >
+                    {!photoState || photoState.status === 'loading' ? (
                       <span className="text-xs text-[#435E8D]">학생증 사진 불러오는 중...</span>
-                    ) : photo ? (
+                    ) : photoState.status === 'ready' ? (
                       <img
-                        src={photo}
+                        src={photoState.url}
                         alt={`${applicant.name} 학생증`}
+                        loading="lazy"
+                        decoding="async"
+                        onError={() => handleImageElementError(applicant.uid)}
                         className="w-full h-full object-contain bg-white"
                       />
+                    ) : photoState.status === 'error' ? (
+                      <div className="text-center px-3 space-y-2">
+                        <p className="text-[11px] font-medium text-[#0D1B3E] line-clamp-2">
+                          사진을 불러오지 못했어요
+                        </p>
+                        <button
+                          type="button"
+                          onClick={(e) => handleRetryPhoto(e, applicant)}
+                          className="min-h-[32px] px-3 rounded-lg bg-[#1D5CE5] text-white text-[11px] font-semibold inline-flex items-center gap-1"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          다시 불러오기
+                        </button>
+                      </div>
                     ) : (
-                      <div className="text-center px-3 space-y-1">
+                      <div className="text-center px-3 space-y-1.5">
                         <ImageIcon className="w-5 h-5 text-[#7B95BE] mx-auto" />
                         <p className="text-[11px] text-[#435E8D]">
                           {applicant.status === 'approved'
                             ? '승인 완료 후 삭제됨'
-                            : '학생증 사진 없음'}
+                            : '저장된 학생증 사진 없음'}
                         </p>
+                        {applicant.status !== 'approved' && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleRetryPhoto(e, applicant)}
+                            className="text-[11px] font-semibold text-[#1D5CE5] hover:underline inline-flex items-center gap-1"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            다시 확인
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
 
-                  <p className="text-[11px] font-semibold text-[#1D5CE5]">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUserDetail(applicant)}
+                    className="text-[11px] font-semibold text-[#1D5CE5] text-left"
+                  >
                     눌러서 회원 상세 정보 및 학생증 크게 보기
-                  </p>
-                </button>
+                  </button>
+                </div>
 
                 {applicant.status === 'pending' && (
                   rejectingUid === applicant.uid ? (
@@ -375,7 +526,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                       <button
                         type="button"
                         disabled={isBusy}
-                        onClick={() => void handleApprove(applicant.uid)}
+                        onClick={() => void handleApprove(applicant)}
                         className="min-h-[44px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors"
                       >
                         <Check className="w-4 h-4" />
@@ -447,26 +598,80 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
             </div>
 
             <div className="space-y-2">
-              <p className="text-xs font-bold text-[#0D1B3E]">학생증 이미지</p>
-              <div className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] min-h-[200px] flex items-center justify-center">
-                {photos[selectedUser.uid] === undefined ? (
-                  <span className="text-xs text-[#435E8D]">학생증 이미지 불러오는 중...</span>
-                ) : photos[selectedUser.uid] ? (
-                  <img
-                    src={photos[selectedUser.uid] || ''}
-                    alt={`${selectedUser.name} 학생증 이미지`}
-                    className="w-full max-h-[55vh] object-contain bg-white"
-                  />
-                ) : (
-                  <div className="p-6 text-center space-y-1">
-                    <ImageIcon className="w-7 h-7 text-[#7B95BE] mx-auto" />
-                    <p className="text-xs font-medium text-[#435E8D]">
-                      {selectedUser.status === 'approved'
-                        ? '승인이 완료되어 학생증 사진이 삭제되었어요.'
-                        : '업로드된 학생증 사진이 없어요.'}
-                    </p>
-                  </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold text-[#0D1B3E]">학생증 이미지</p>
+                {selectedUser.hasStudentIdPhoto && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                    className="text-xs font-semibold text-[#1D5CE5] hover:underline inline-flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    새로고침
+                  </button>
                 )}
+              </div>
+              <div className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] min-h-[200px] flex items-center justify-center">
+                {(() => {
+                  const modalPhoto = photoStates[selectedUser.uid];
+                  if (!modalPhoto || modalPhoto.status === 'loading') {
+                    return (
+                      <span className="text-xs text-[#435E8D]">학생증 이미지 불러오는 중...</span>
+                    );
+                  }
+                  if (modalPhoto.status === 'ready') {
+                    return (
+                      <img
+                        src={modalPhoto.url}
+                        alt={`${selectedUser.name} 학생증 이미지`}
+                        decoding="async"
+                        onError={() => handleImageElementError(selectedUser.uid)}
+                        className="w-full max-h-[55vh] object-contain bg-white"
+                      />
+                    );
+                  }
+                  if (modalPhoto.status === 'error') {
+                    return (
+                      <div className="p-6 text-center space-y-2.5">
+                        <AlertCircle className="w-7 h-7 text-[#1D5CE5] mx-auto" />
+                        <p className="text-xs font-medium text-[#0D1B3E]">{modalPhoto.message}</p>
+                        <button
+                          type="button"
+                          onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                          className="min-h-[38px] px-4 rounded-xl bg-[#1D5CE5] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          다시 불러오기
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="p-6 text-center space-y-2">
+                      <ImageIcon className="w-7 h-7 text-[#7B95BE] mx-auto" />
+                      <p className="text-xs font-medium text-[#435E8D]">
+                        {selectedUser.status === 'approved'
+                          ? '승인이 완료되어 학생증 사진이 삭제되었어요.'
+                          : 'Storage에 저장된 학생증 사진이 없어요.'}
+                      </p>
+                      {selectedUser.status !== 'approved' && (
+                        <>
+                          <p className="text-[11px] text-[#5B759E] leading-relaxed">
+                            Storage 규칙 설정 전에 가입했거나 파일이 삭제된 경우일 수 있어요. &apos;거절&apos;을 누르면 회원이 새 학생증 사진을 다시 올릴 수 있어요.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                            className="min-h-[36px] px-3.5 rounded-xl border border-[#C6DCF7] bg-white text-[#1D5CE5] text-xs font-semibold inline-flex items-center gap-1.5"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            다시 확인
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -486,7 +691,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                 <button
                   type="button"
                   disabled={busyUid === selectedUser.uid}
-                  onClick={() => void handleApprove(selectedUser.uid)}
+                  onClick={() => void handleApprove(selectedUser)}
                   className="min-h-[46px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] text-white text-sm font-semibold"
                 >
                   {busyUid === selectedUser.uid ? '처리 중...' : '승인'}
