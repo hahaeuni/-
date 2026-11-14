@@ -1,15 +1,24 @@
-import React, { Component, ErrorInfo, ReactNode, useEffect, useMemo, useState } from 'react';
+import React, { Component, ErrorInfo, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
-import { Home, Plus, Shield, User as UserIcon } from 'lucide-react';
+import { Bell, History, Home, Plus, Shield, User as UserIcon, X } from 'lucide-react';
 import { AdminApprovalPage } from './components/AdminApprovalPage';
 import { AuthScreen } from './components/AuthScreen';
 import { CreateRoomWizard } from './components/CreateRoomWizard';
 import { HomeRoomList } from './components/HomeRoomList';
 import { MyInfoPage } from './components/MyInfoPage';
 import { PendingApprovalScreen } from './components/PendingApprovalScreen';
+import { RideHistoryPage } from './components/RideHistoryPage';
 import { RoomDetailView } from './components/RoomDetailView';
+import { InAppNotificationToast, useRoomNotifications } from './hooks/useRoomNotifications';
 import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import {
+  BrowserNotificationPermission,
+  dismissPushPrompt,
+  getNotificationPermission,
+  isPushPromptDismissed,
+  requestBrowserNotificationPermission,
+} from './lib/notificationService';
 import { expireRoomIfNeeded } from './lib/roomService';
 import { ADMIN_EMAIL, ADMIN_UID, TaxiRoom, UserProfile } from './types';
 
@@ -51,7 +60,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryS
   }
 }
 
-type AppTab = 'home' | 'create' | 'myinfo' | 'admin';
+type AppTab = 'home' | 'create' | 'history' | 'myinfo' | 'admin';
 
 function MainApp() {
   const [authReady, setAuthReady] = useState(false);
@@ -62,12 +71,19 @@ function MainApp() {
 
   const [tab, setTab] = useState<AppTab>('home');
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [roomReturnTab, setRoomReturnTab] = useState<'home' | 'history'>('home');
   const [adminBypassOpen, setAdminBypassOpen] = useState(false);
   const [adminPreferUserView, setAdminPreferUserView] = useState(false);
 
   const [openRooms, setOpenRooms] = useState<TaxiRoom[]>([]);
   const [myRooms, setMyRooms] = useState<TaxiRoom[]>([]);
+  const [myRoomsLoaded, setMyRoomsLoaded] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const [notificationPermission, setNotificationPermission] =
+    useState<BrowserNotificationPermission>(() => getNotificationPermission());
+  const [pushPromptHidden, setPushPromptHidden] = useState(() => isPushPromptDismissed());
+  const [activeToast, setActiveToast] = useState<InAppNotificationToast | null>(null);
 
   // Live clock tick every 5 seconds for countdowns & auto-expiry
   useEffect(() => {
@@ -75,6 +91,16 @@ function MainApp() {
       setNowMs(Date.now());
     }, 5000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Read initial ?room=... query param if launched from a browser push notification
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      setSelectedRoomId(roomParam);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
   }, []);
 
   // Auth listener
@@ -90,6 +116,7 @@ function MainApp() {
         setAdminPreferUserView(false);
         setOpenRooms([]);
         setMyRooms([]);
+        setMyRoomsLoaded(false);
         setSelectedRoomId(null);
         setTab('home');
       } else if (user.uid === ADMIN_UID) {
@@ -145,9 +172,11 @@ function MainApp() {
     if (!firebaseUser || profile?.status !== 'approved') {
       setOpenRooms([]);
       setMyRooms([]);
+      setMyRoomsLoaded(false);
       return;
     }
 
+    setMyRoomsLoaded(false);
     const openQuery = query(collection(db, 'rooms'), where('status', '==', 'open'));
     const unsubOpen = onSnapshot(
       openQuery,
@@ -171,6 +200,7 @@ function MainApp() {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as TaxiRoom);
         list.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
         setMyRooms(list);
+        setMyRoomsLoaded(true);
       },
       (err) => {
         handleFirestoreError(err, OperationType.LIST, 'rooms');
@@ -183,15 +213,64 @@ function MainApp() {
     };
   }, [firebaseUser, profile?.status]);
 
-  // Auto-expire open rooms past departureAt
+  const handleOpenRoomFromNotification = useCallback((roomId: string) => {
+    setRoomReturnTab('home');
+    setSelectedRoomId(roomId);
+    setTab('home');
+    setActiveToast(null);
+  }, []);
+
+  const handleInAppToast = useCallback((toast: InAppNotificationToast) => {
+    setActiveToast(toast);
+  }, []);
+
+  useEffect(() => {
+    if (!activeToast) return;
+    const timer = window.setTimeout(() => {
+      setActiveToast(null);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [activeToast]);
+
+  useRoomNotifications({
+    myRooms,
+    myRoomsLoaded,
+    currentUserId: profile?.status === 'approved' ? profile.uid : undefined,
+    nowMs,
+    onInAppToast: handleInAppToast,
+    onOpenRoomFromNotification: handleOpenRoomFromNotification,
+  });
+
+  const handleEnablePushNotifications = async () => {
+    const next = await requestBrowserNotificationPermission();
+    setNotificationPermission(next);
+    if (next !== 'default') {
+      dismissPushPrompt();
+      setPushPromptHidden(true);
+    }
+  };
+
+  // Auto-delete open/expired rooms past departureAt
   useEffect(() => {
     if (profile?.status !== 'approved') return;
+    const toDeleteIds = new Set<string>();
     openRooms.forEach((room) => {
       if (room.status === 'open' && room.departureAt && room.departureAt.toMillis() <= nowMs) {
-        void expireRoomIfNeeded(room.id);
+        toDeleteIds.add(room.id);
       }
     });
-  }, [openRooms, nowMs, profile?.status]);
+    myRooms.forEach((room) => {
+      if (
+        room.status === 'expired' ||
+        (room.status === 'open' && room.departureAt && room.departureAt.toMillis() <= nowMs)
+      ) {
+        toDeleteIds.add(room.id);
+      }
+    });
+    toDeleteIds.forEach((id) => {
+      void expireRoomIfNeeded(id);
+    });
+  }, [openRooms, myRooms, nowMs, profile?.status]);
 
   const blockingRoom = useMemo(() => {
     return (
@@ -205,23 +284,19 @@ function MainApp() {
     );
   }, [myRooms, nowMs]);
 
-  const myActiveRooms = useMemo(() => {
-    const dayAgo = nowMs - 24 * 60 * 60 * 1000;
-    return myRooms.filter((r) => {
-      if (r.status === 'closed') return true;
-      if (r.status === 'open' && r.departureAt && r.departureAt.toMillis() > nowMs) return true;
-      if (r.status === 'settled' && (r.updatedAt?.toMillis() ?? 0) > dayAgo) return true;
-      return false;
-    });
-  }, [myRooms, nowMs]);
+  const historyRooms = useMemo(() => {
+    return myRooms.filter((r) => r.status === 'settled' || r.status === 'completed');
+  }, [myRooms]);
 
   if (!authReady || (firebaseUser && !profileLoaded)) {
     return (
       <div className="min-h-screen bg-[#F4F9FF] flex items-center justify-center p-4">
-        <div className="text-center space-y-2">
-          <div className="w-10 h-10 rounded-2xl bg-[#1D5CE5] text-white font-bold flex items-center justify-center mx-auto">
-            한림
-          </div>
+        <div className="text-center space-y-2.5">
+          <img
+            src="/pwa-192x192.png"
+            alt="한림 TAXI 아이콘"
+            className="w-14 h-14 rounded-2xl mx-auto border border-[#DCE9F8] shadow-sm object-cover"
+          />
           <p className="text-xs font-medium text-[#435E8D]">불러오는 중이에요...</p>
         </div>
       </div>
@@ -239,7 +314,7 @@ function MainApp() {
         <header className="sticky top-0 z-30 h-[52px] bg-white/95 backdrop-blur-md border-b border-[#DCE9F8] px-4">
           <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-8">
             <span className="text-base font-bold text-[#0D1B3E] whitespace-nowrap shrink-0">
-              한림택시
+              한림 TAXI
             </span>
             <div className="flex items-center gap-2 shrink-0">
               <span className="px-2.5 py-1 rounded-lg bg-[#0D1B3E] text-white text-xs font-bold whitespace-nowrap shrink-0">
@@ -267,7 +342,7 @@ function MainApp() {
         <header className="sticky top-0 z-30 h-[52px] bg-white/95 backdrop-blur-md border-b border-[#DCE9F8] px-4">
           <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-8">
             <span className="text-base font-bold text-[#0D1B3E] whitespace-nowrap shrink-0">
-              한림택시
+              한림 TAXI
             </span>
             <button
               type="button"
@@ -314,6 +389,12 @@ function MainApp() {
     setTab('home');
   };
 
+  const openRoomDetail = (id: string, returnTo: 'home' | 'history') => {
+    setRoomReturnTab(returnTo);
+    setSelectedRoomId(id);
+    setTab(returnTo);
+  };
+
   return (
     <div className="min-h-screen bg-[#F4F9FF] flex flex-col">
       {/* Top App Bar (52px) */}
@@ -324,7 +405,7 @@ function MainApp() {
             onClick={navigateHome}
             className="text-base font-bold tracking-tight text-[#0D1B3E] whitespace-nowrap shrink-0"
           >
-            한림택시
+            한림 TAXI
           </button>
 
           <nav className="hidden md:flex items-center gap-6 text-sm font-semibold text-[#435E8D]">
@@ -348,6 +429,18 @@ function MainApp() {
               }`}
             >
               방 만들기
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedRoomId(null);
+                setTab('history');
+              }}
+              className={`whitespace-nowrap shrink-0 transition-colors ${
+                tab === 'history' ? 'text-[#1D5CE5]' : 'hover:text-[#0D1B3E]'
+              }`}
+            >
+              과거 이력
             </button>
             <button
               type="button"
@@ -397,66 +490,165 @@ function MainApp() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 w-full max-w-5xl mx-auto px-4 pt-5 pb-24">
-        {tab === 'home' && !selectedRoomId && (
-          <HomeRoomList
-            rooms={openRooms}
-            myActiveRooms={myActiveRooms}
-            currentUserId={profile.uid}
-            nowMs={nowMs}
-            onSelectRoom={(id) => setSelectedRoomId(id)}
-            onOpenCreate={() => setTab('create')}
-          />
+      <main className="flex-1 w-full max-w-5xl mx-auto px-4 pt-5 pb-24 space-y-4">
+        {activeToast && (
+          <div
+            role="status"
+            className="bg-[#0D1B3E] text-white rounded-2xl p-4 flex items-start justify-between gap-3 shadow-md"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (activeToast.roomId) {
+                  handleOpenRoomFromNotification(activeToast.roomId);
+                } else {
+                  setActiveToast(null);
+                }
+              }}
+              className="flex items-start gap-3 text-left min-w-0 flex-1"
+            >
+              <Bell className="w-5 h-5 text-[#7DD3FC] shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[#7DD3FC]">{activeToast.title}</p>
+                <p className="text-xs text-white mt-0.5 leading-relaxed">{activeToast.body}</p>
+              </div>
+            </button>
+            <button
+              type="button"
+              aria-label="알림 닫기"
+              onClick={() => setActiveToast(null)}
+              className="min-w-[36px] min-h-[36px] rounded-lg flex items-center justify-center text-[#BFDBFE] hover:text-white shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         )}
 
-        {tab === 'home' && selectedRoomId && (
+        {!selectedRoomId &&
+          tab === 'home' &&
+          notificationPermission === 'default' &&
+          !pushPromptHidden && (
+            <div className="bg-white border border-[#BFDBFE] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#EBF4FF] text-[#1D5CE5] flex items-center justify-center shrink-0">
+                  <Bell className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-[#0D1B3E]">실시간 브라우저 푸시 알림 받기</p>
+                  <p className="text-xs text-[#435E8D] mt-0.5 leading-relaxed">
+                    새 동승자 참여, 모집 마감, 출발 6분 전 위치 사진 미등록 알림을 바로 받아볼 수 있어요.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissPushPrompt();
+                    setPushPromptHidden(true);
+                  }}
+                  className="min-h-[40px] px-3 rounded-xl text-xs font-semibold text-[#435E8D] hover:bg-[#F4F9FF] whitespace-nowrap"
+                >
+                  나중에
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleEnablePushNotifications()}
+                  className="min-h-[40px] px-4 rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] text-white text-xs font-semibold whitespace-nowrap transition-colors"
+                >
+                  알림 허용
+                </button>
+              </div>
+            </div>
+          )}
+
+        {selectedRoomId ? (
           <RoomDetailView
             roomId={selectedRoomId}
             profile={profile}
             blockingRoom={blockingRoom}
             nowMs={nowMs}
-            onBack={() => setSelectedRoomId(null)}
-          />
-        )}
-
-        {tab === 'create' && (
-          <CreateRoomWizard
-            profile={profile}
-            blockingRoom={blockingRoom}
-            onCancel={() => setTab('home')}
-            onCreated={(newRoomId) => {
-              setSelectedRoomId(newRoomId);
-              setTab('home');
-            }}
-            onGoToActiveRoom={(activeId) => {
-              setSelectedRoomId(activeId);
-              setTab('home');
+            onBack={() => {
+              setSelectedRoomId(null);
+              setTab(roomReturnTab);
             }}
           />
-        )}
+        ) : (
+          <>
+            {tab === 'home' && (
+              <HomeRoomList
+                rooms={openRooms}
+                myActiveRoom={blockingRoom}
+                currentUserId={profile.uid}
+                nowMs={nowMs}
+                onSelectRoom={(id) => openRoomDetail(id, 'home')}
+                onOpenCreate={() => setTab('create')}
+              />
+            )}
 
-        {tab === 'myinfo' && <MyInfoPage profile={profile} />}
+            {tab === 'create' && (
+              <CreateRoomWizard
+                profile={profile}
+                blockingRoom={blockingRoom}
+                onCancel={() => setTab('home')}
+                onCreated={(newRoomId) => openRoomDetail(newRoomId, 'home')}
+                onGoToActiveRoom={(activeId) => openRoomDetail(activeId, 'home')}
+              />
+            )}
 
-        {tab === 'admin' && isAdmin && (
-          <AdminApprovalPage showLogout onBack={() => setTab('home')} />
+            {tab === 'history' && (
+              <RideHistoryPage
+                rooms={historyRooms}
+                currentUserId={profile.uid}
+                nowMs={nowMs}
+                onSelectRoom={(id) => openRoomDetail(id, 'history')}
+              />
+            )}
+
+            {tab === 'myinfo' && (
+              <MyInfoPage
+                profile={profile}
+                notificationPermission={notificationPermission}
+                onNotificationPermissionChange={setNotificationPermission}
+              />
+            )}
+
+            {tab === 'admin' && isAdmin && (
+              <AdminApprovalPage showLogout onBack={() => setTab('home')} />
+            )}
+          </>
         )}
       </main>
 
-      {/* Fixed Bottom Navigation (60px, center + button) */}
+      {/* Fixed Bottom Navigation (60px) */}
       <nav
         aria-label="하단 내비게이션"
         className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#DCE9F8] pb-safe"
       >
-        <div className="max-w-lg mx-auto grid grid-cols-3 items-center h-[60px] px-4">
+        <div className="max-w-lg mx-auto grid grid-cols-4 items-center h-[60px] px-2">
           <button
             type="button"
             onClick={navigateHome}
-            className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              tab === 'home' ? 'text-[#1D5CE5]' : 'text-[#435E8D]'
+            className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 whitespace-nowrap transition-colors ${
+              tab === 'home' && !selectedRoomId ? 'text-[#1D5CE5]' : 'text-[#435E8D]'
             }`}
           >
             <Home className="w-5 h-5" />
             <span className="text-[11px] font-semibold">홈</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedRoomId(null);
+              setTab('history');
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 whitespace-nowrap transition-colors ${
+              tab === 'history' ? 'text-[#1D5CE5]' : 'text-[#435E8D]'
+            }`}
+          >
+            <History className="w-5 h-5" />
+            <span className="text-[11px] font-semibold">과거 이력</span>
           </button>
 
           <div className="flex items-center justify-center">
@@ -479,7 +671,7 @@ function MainApp() {
               setSelectedRoomId(null);
               setTab('myinfo');
             }}
-            className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors ${
+            className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 whitespace-nowrap transition-colors ${
               tab === 'myinfo' ? 'text-[#1D5CE5]' : 'text-[#435E8D]'
             }`}
           >

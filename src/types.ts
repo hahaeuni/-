@@ -42,8 +42,8 @@ export type Gender = 'male' | 'female';
 export type GenderCondition = 'male' | 'female' | 'any';
 export type UserStatus = 'pending' | 'approved' | 'rejected';
 export type AuthProviderType = 'password' | 'google' | 'phone';
-export type RoomStatus = 'open' | 'closed' | 'settled' | 'expired';
-export type DepartureMinutes = 10 | 20 | 30;
+export type RoomStatus = 'open' | 'closed' | 'settled' | 'completed' | 'expired';
+export type DepartureMinutes = number;
 
 export const ADMIN_EMAIL = 'un54208@gmail.com';
 export const ADMIN_UID = 'MAAA6M66iMRXh42cyYrcdk9yYLB2';
@@ -101,6 +101,7 @@ export interface TaxiRoom {
   locationPhotoUrl: string;
   genderCondition: GenderCondition;
   maxParticipants: number;
+  isFlexibleCapacity?: boolean;
   currentParticipants: number;
   participantIds: string[];
   participantNames: string[];
@@ -147,16 +148,31 @@ export function formatDepartureTime(ts: Timestamp | undefined | null, nowMs: num
     return { clockText: '--:--', remainingText: '확인 중', isExpired: false };
   }
   const date = ts.toDate();
+  const nowDate = new Date(nowMs);
+  const isSameDay =
+    date.getFullYear() === nowDate.getFullYear() &&
+    date.getMonth() === nowDate.getMonth() &&
+    date.getDate() === nowDate.getDate();
+
   const hours = date.getHours();
   const minutes = date.getMinutes().toString().padStart(2, '0');
-  const period = hours < 12 ? '오전' : '오후';
-  const displayHour = hours % 12 === 0 ? 12 : hours % 12;
-  const clockText = `${period} ${displayHour}:${minutes} 출발`;
+  const hourStr = hours.toString().padStart(2, '0');
+  const dayPrefix = isSameDay ? '' : '내일 ';
+  const clockText = `${dayPrefix}${hourStr}시 ${minutes}분 출발`;
 
   const diffMs = date.getTime() - nowMs;
   if (diffMs <= 0) {
     return { clockText, remainingText: '출발 시간 지남', isExpired: true };
   }
   const diffMin = Math.ceil(diffMs / 60000);
+  if (diffMin >= 60) {
+    const h = Math.floor(diffMin / 60);
+    const m = diffMin % 60;
+    return {
+      clockText,
+      remainingText: m > 0 ? `${h}시간 ${m}분 남음` : `${h}시간 남음`,
+      isExpired: false,
+    };
+  }
   return { clockText, remainingText: `${diffMin}분 남음`, isExpired: false };
 }

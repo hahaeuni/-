@@ -13,6 +13,10 @@ export function getStudentIdStoragePath(uid: string): string {
   return `student-ids/${uid}/student-id.jpg`;
 }
 
+export function getStudentIdThumbStoragePath(uid: string): string {
+  return `student-ids/${uid}/student-id-thumb.jpg`;
+}
+
 export function getRoomPhotoStoragePath(roomId: string): string {
   return `rooms/${roomId}/location.jpg`;
 }
@@ -48,14 +52,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string)
   });
 }
 
-export async function uploadStudentIdPhoto(uid: string, blob: Blob): Promise<string> {
+export async function uploadStudentIdPhoto(
+  uid: string,
+  blob: Blob,
+  thumbnailBlob?: Blob
+): Promise<string> {
   const path = getStudentIdStoragePath(uid);
+  const thumbPath = getStudentIdThumbStoragePath(uid);
   try {
     const fileRef = ref(storage, path);
-    await uploadBytes(fileRef, blob, {
-      contentType: 'image/jpeg',
-      cacheControl: 'private, max-age=3600',
-    });
+    const uploadTasks: Promise<unknown>[] = [
+      uploadBytes(fileRef, blob, {
+        contentType: 'image/jpeg',
+        cacheControl: 'private, max-age=3600',
+      }),
+    ];
+
+    if (thumbnailBlob && thumbnailBlob.size > 0) {
+      uploadTasks.push(
+        uploadBytes(ref(storage, thumbPath), thumbnailBlob, {
+          contentType: 'image/jpeg',
+          cacheControl: 'private, max-age=3600',
+        })
+      );
+    }
+
+    await Promise.all(uploadTasks);
+
     // Verify the uploaded file is immediately accessible before completing signup
     await withTimeout(
       getDownloadURL(fileRef),
@@ -66,6 +89,31 @@ export async function uploadStudentIdPhoto(uid: string, blob: Blob): Promise<str
   } catch (error) {
     throw new Error(translateStorageError(error));
   }
+}
+
+export async function fetchStudentIdThumbnailUrl(
+  uid: string,
+  preferredPath?: string
+): Promise<{ url: string; isThumbnail: boolean } | null> {
+  const thumbPath = getStudentIdThumbStoragePath(uid);
+  try {
+    const thumbUrl = await withTimeout(
+      getDownloadURL(ref(storage, thumbPath)),
+      8000,
+      '학생증 썸네일 응답 시간이 초과되었어요. 다시 시도해 주세요.'
+    );
+    return { url: thumbUrl, isThumbnail: true };
+  } catch (error) {
+    const code = (error as { code?: string })?.code || '';
+    if (code !== 'storage/object-not-found') {
+      throw new Error(translateStorageError(error));
+    }
+  }
+
+  // Fallback for accounts uploaded before thumbnails were introduced
+  const fullUrl = await fetchPrivateStudentIdPhotoUrl(uid, preferredPath);
+  if (!fullUrl) return null;
+  return { url: fullUrl, isThumbnail: false };
 }
 
 export async function fetchPrivateStudentIdPhotoUrl(
@@ -104,14 +152,14 @@ export async function fetchPrivateStudentIdPhotoUrl(
       '학생증 폴더 조회 시간이 초과되었어요.'
     );
     if (listResult.items.length > 0) {
-      return await getDownloadURL(listResult.items[0]);
+      const nonThumb = listResult.items.find((item) => !item.name.endsWith('-thumb.jpg'));
+      return await getDownloadURL(nonThumb || listResult.items[0]);
     }
   } catch (error) {
     const code = (error as { code?: string })?.code || '';
     if (code === 'storage/unauthorized') {
       throw new Error(translateStorageError(error));
     }
-    // Otherwise fall through to legacy Firestore check
   }
 
   // Fallback check for legacy Firestore-stored image if any
@@ -130,11 +178,15 @@ export async function deleteStudentIdPhotoFromStorage(
   uid: string,
   preferredPath?: string
 ): Promise<void> {
-  const defaultPath = getStudentIdStoragePath(uid);
-  const paths =
-    preferredPath && preferredPath.trim() && preferredPath !== defaultPath
-      ? [preferredPath.trim(), defaultPath]
-      : [defaultPath];
+  const paths = Array.from(
+    new Set(
+      [
+        preferredPath?.trim(),
+        getStudentIdStoragePath(uid),
+        getStudentIdThumbStoragePath(uid),
+      ].filter((p): p is string => Boolean(p))
+    )
+  );
 
   for (const storagePath of paths) {
     try {

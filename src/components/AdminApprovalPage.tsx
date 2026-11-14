@@ -16,6 +16,7 @@ import {
 import {
   approveUserAccount,
   getStudentIdPhoto,
+  getStudentIdThumbnail,
   logoutUser,
   rejectUserAccount,
 } from '../lib/authService';
@@ -32,9 +33,14 @@ type StatusFilter = 'all' | UserStatus;
 
 type PhotoState =
   | { status: 'loading' }
-  | { status: 'ready'; url: string }
+  | { status: 'ready'; url: string; isThumbnail: boolean }
   | { status: 'empty' }
   | { status: 'error'; message: string };
+
+type FullPhotoState =
+  | { status: 'loading' }
+  | { status: 'ready'; url: string }
+  | { status: 'error' };
 
 function formatCreatedAt(user: UserProfile): string {
   if (!user.createdAt) return '가입일 확인 중';
@@ -66,6 +72,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [photoStates, setPhotoStates] = useState<Record<string, PhotoState>>({});
+  const [fullPhotoStates, setFullPhotoStates] = useState<Record<string, FullPhotoState>>({});
   const [loadingList, setLoadingList] = useState(true);
   const [busyUid, setBusyUid] = useState<string | null>(null);
   const [rejectingUid, setRejectingUid] = useState<string | null>(null);
@@ -75,6 +82,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
 
   const fetchedKeyRef = useRef<Record<string, string>>({});
   const inFlightRef = useRef<Set<string>>(new Set());
+  const fullInFlightRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -84,7 +92,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
     };
   }, []);
 
-  const loadPhotoForUser = useCallback(async (user: UserProfile, force = false) => {
+  const loadThumbnailForUser = useCallback(async (user: UserProfile, force = false) => {
     const versionKey = getPhotoVersionKey(user);
 
     if (user.status === 'approved' && !user.hasStudentIdPhoto) {
@@ -113,10 +121,13 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
     }
 
     try {
-      const url = await getStudentIdPhoto(user.uid, user.studentIdPhotoPath);
+      const result = await getStudentIdThumbnail(user.uid, user.studentIdPhotoPath);
       if (!mountedRef.current) return;
-      if (url) {
-        setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'ready', url } }));
+      if (result) {
+        setPhotoStates((prev) => ({
+          ...prev,
+          [user.uid]: { status: 'ready', url: result.url, isThumbnail: result.isThumbnail },
+        }));
       } else {
         setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'empty' } }));
       }
@@ -133,6 +144,33 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
       inFlightRef.current.delete(user.uid);
     }
   }, []);
+
+  const loadFullPhotoForUser = useCallback(async (user: UserProfile, force = false) => {
+    if (user.status === 'approved' && !user.hasStudentIdPhoto) return;
+    if (!force && fullPhotoStates[user.uid]?.status === 'ready') return;
+    if (fullInFlightRef.current.has(user.uid)) return;
+
+    fullInFlightRef.current.add(user.uid);
+    setFullPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'loading' } }));
+
+    try {
+      const fullUrl = await getStudentIdPhoto(user.uid, user.studentIdPhotoPath);
+      if (!mountedRef.current) return;
+      if (fullUrl) {
+        setFullPhotoStates((prev) => ({
+          ...prev,
+          [user.uid]: { status: 'ready', url: fullUrl },
+        }));
+      } else {
+        setFullPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'error' } }));
+      }
+    } catch {
+      if (!mountedRef.current) return;
+      setFullPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'error' } }));
+    } finally {
+      fullInFlightRef.current.delete(user.uid);
+    }
+  }, [fullPhotoStates]);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -154,7 +192,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
     return () => unsub();
   }, []);
 
-  // Prioritized bounded concurrency queue: load pending users first, max 4 at a time
+  // Load lightweight thumbnails for dashboard cards (pending users first, max 4 concurrent)
   useEffect(() => {
     if (allUsers.length === 0) return;
 
@@ -177,7 +215,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
       while (!cancelled) {
         const idx = cursor++;
         if (idx >= toFetch.length) break;
-        await loadPhotoForUser(toFetch[idx]);
+        await loadThumbnailForUser(toFetch[idx]);
       }
     };
 
@@ -189,7 +227,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [allUsers, loadPhotoForUser]);
+  }, [allUsers, loadThumbnailForUser]);
 
   const counts = useMemo(() => {
     return {
@@ -209,14 +247,20 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
     setSelectedUser(user);
     const current = photoStates[user.uid];
     if (!current || current.status === 'error') {
-      void loadPhotoForUser(user, true);
+      void loadThumbnailForUser(user, true);
+    }
+    if (!current || current.status !== 'ready' || current.isThumbnail) {
+      void loadFullPhotoForUser(user);
     }
   };
 
-  const handleRetryPhoto = (e: React.MouseEvent, user: UserProfile) => {
+  const handleRetryPhoto = (e: React.MouseEvent, user: UserProfile, includeFull = false) => {
     e.stopPropagation();
     setError('');
-    void loadPhotoForUser(user, true);
+    void loadThumbnailForUser(user, true);
+    if (includeFull) {
+      void loadFullPhotoForUser(user, true);
+    }
   };
 
   const handleImageElementError = (uid: string) => {
@@ -236,6 +280,11 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
       await approveUserAccount(user.uid, user.studentIdPhotoPath);
       fetchedKeyRef.current[user.uid] = `${user.uid}:0:`;
       setPhotoStates((prev) => ({ ...prev, [user.uid]: { status: 'empty' } }));
+      setFullPhotoStates((prev) => {
+        const next = { ...prev };
+        delete next[user.uid];
+        return next;
+      });
       if (selectedUser?.uid === user.uid) {
         setSelectedUser((prev) =>
           prev
@@ -425,11 +474,11 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                     className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] h-40 flex items-center justify-center cursor-pointer"
                   >
                     {!photoState || photoState.status === 'loading' ? (
-                      <span className="text-xs text-[#435E8D]">학생증 사진 불러오는 중...</span>
+                      <span className="text-xs text-[#435E8D]">썸네일 불러오는 중...</span>
                     ) : photoState.status === 'ready' ? (
                       <img
                         src={photoState.url}
-                        alt={`${applicant.name} 학생증`}
+                        alt={`${applicant.name} 학생증 썸네일`}
                         loading="lazy"
                         decoding="async"
                         onError={() => handleImageElementError(applicant.uid)}
@@ -476,7 +525,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                     onClick={() => handleOpenUserDetail(applicant)}
                     className="text-[11px] font-semibold text-[#1D5CE5] text-left"
                   >
-                    눌러서 회원 상세 정보 및 학생증 크게 보기
+                    눌러서 회원 상세 정보 및 고해상도 학생증 보기
                   </button>
                 </div>
 
@@ -541,7 +590,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
         </div>
       )}
 
-      {/* Selected User Detail & Image Modal */}
+      {/* Selected User Detail & High-Res Image Modal */}
       {selectedUser && (
         <div
           className="fixed inset-0 z-50 bg-[#0D1B3E]/80 backdrop-blur-sm flex items-center justify-center p-4"
@@ -598,12 +647,20 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-bold text-[#0D1B3E]">학생증 이미지</p>
-                {selectedUser.hasStudentIdPhoto && (
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-bold text-[#0D1B3E]">학생증 이미지</p>
+                  {fullPhotoStates[selectedUser.uid]?.status === 'loading' &&
+                    photoStates[selectedUser.uid]?.status === 'ready' && (
+                      <span className="text-[11px] font-medium text-[#0284C7]">
+                        원본 화질 불러오는 중...
+                      </span>
+                    )}
+                </div>
+                {selectedUser.status !== 'approved' && (
                   <button
                     type="button"
-                    onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                    onClick={(e) => handleRetryPhoto(e, selectedUser, true)}
                     className="text-xs font-semibold text-[#1D5CE5] hover:underline inline-flex items-center gap-1"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -613,31 +670,53 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
               </div>
               <div className="rounded-2xl overflow-hidden border border-[#DCE9F8] bg-[#F4F9FF] min-h-[200px] flex items-center justify-center">
                 {(() => {
-                  const modalPhoto = photoStates[selectedUser.uid];
-                  if (!modalPhoto || modalPhoto.status === 'loading') {
-                    return (
-                      <span className="text-xs text-[#435E8D]">학생증 이미지 불러오는 중...</span>
-                    );
-                  }
-                  if (modalPhoto.status === 'ready') {
+                  const thumbPhoto = photoStates[selectedUser.uid];
+                  const fullPhoto = fullPhotoStates[selectedUser.uid];
+                  const displayUrl =
+                    fullPhoto?.status === 'ready'
+                      ? fullPhoto.url
+                      : thumbPhoto?.status === 'ready'
+                      ? thumbPhoto.url
+                      : null;
+
+                  if (displayUrl) {
                     return (
                       <img
-                        src={modalPhoto.url}
+                        src={displayUrl}
                         alt={`${selectedUser.name} 학생증 이미지`}
                         decoding="async"
-                        onError={() => handleImageElementError(selectedUser.uid)}
+                        onError={() => {
+                          if (fullPhoto?.status === 'ready' && displayUrl === fullPhoto.url) {
+                            setFullPhotoStates((prev) => ({
+                              ...prev,
+                              [selectedUser.uid]: { status: 'error' },
+                            }));
+                          } else {
+                            handleImageElementError(selectedUser.uid);
+                          }
+                        }}
                         className="w-full max-h-[55vh] object-contain bg-white"
                       />
                     );
                   }
-                  if (modalPhoto.status === 'error') {
+
+                  if (
+                    (!thumbPhoto || thumbPhoto.status === 'loading') ||
+                    fullPhoto?.status === 'loading'
+                  ) {
+                    return (
+                      <span className="text-xs text-[#435E8D]">학생증 이미지 불러오는 중...</span>
+                    );
+                  }
+
+                  if (thumbPhoto?.status === 'error') {
                     return (
                       <div className="p-6 text-center space-y-2.5">
                         <AlertCircle className="w-7 h-7 text-[#1D5CE5] mx-auto" />
-                        <p className="text-xs font-medium text-[#0D1B3E]">{modalPhoto.message}</p>
+                        <p className="text-xs font-medium text-[#0D1B3E]">{thumbPhoto.message}</p>
                         <button
                           type="button"
-                          onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                          onClick={(e) => handleRetryPhoto(e, selectedUser, true)}
                           className="min-h-[38px] px-4 rounded-xl bg-[#1D5CE5] text-white text-xs font-semibold inline-flex items-center gap-1.5"
                         >
                           <RefreshCw className="w-3.5 h-3.5" />
@@ -646,6 +725,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                       </div>
                     );
                   }
+
                   return (
                     <div className="p-6 text-center space-y-2">
                       <ImageIcon className="w-7 h-7 text-[#7B95BE] mx-auto" />
@@ -661,7 +741,7 @@ export const AdminApprovalPage: React.FC<AdminApprovalPageProps> = ({
                           </p>
                           <button
                             type="button"
-                            onClick={(e) => handleRetryPhoto(e, selectedUser)}
+                            onClick={(e) => handleRetryPhoto(e, selectedUser, true)}
                             className="min-h-[36px] px-3.5 rounded-xl border border-[#C6DCF7] bg-white text-[#1D5CE5] text-xs font-semibold inline-flex items-center gap-1.5"
                           >
                             <RefreshCw className="w-3.5 h-3.5" />

@@ -175,7 +175,7 @@
         },
         "locationPhotoUrl": {
           "type": "string",
-          "minLength": 10,
+          "minLength": 0,
           "maxLength": 2000
         },
         "genderCondition": {
@@ -194,6 +194,9 @@
         "participantNames": {
           "type": "array"
         },
+        "isFlexibleCapacity": {
+          "type": "boolean"
+        },
         "departureMinutes": {
           "type": "integer"
         },
@@ -203,7 +206,7 @@
         },
         "status": {
           "type": "string",
-          "enum": ["open", "closed", "settled", "expired"]
+          "enum": ["open", "closed", "settled", "completed", "expired"]
         },
         "createdAt": {
           "type": "string",

@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Camera,
   Check,
+  Clock,
   Image as ImageIcon,
   MapPin,
   RotateCcw,
@@ -12,7 +13,6 @@ import {
 import { captureVideoFrameToBlob, compressFileToBlob } from '../lib/imageUtils';
 import { createRoom } from '../lib/roomService';
 import {
-  DepartureMinutes,
   GenderCondition,
   LocationOption,
   LOCATIONS,
@@ -26,6 +26,29 @@ interface CreateRoomWizardProps {
   onCancel: () => void;
   onCreated: (roomId: string) => void;
   onGoToActiveRoom: (roomId: string) => void;
+}
+
+type CapacityChoice = '2' | '3' | '4' | 'any';
+
+const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => i);
+
+function getEarliestFiveMinSlot(nowMs: number): Date {
+  const stepMs = 5 * 60 * 1000;
+  let rounded = Math.ceil(nowMs / stepMs) * stepMs;
+  if (rounded - nowMs < 90 * 1000) {
+    rounded += stepMs;
+  }
+  return new Date(rounded);
+}
+
+function resolveNextDateForHourMinute(nowMs: number, hour: number, minute: number): Date {
+  const candidate = new Date(nowMs);
+  candidate.setHours(hour, minute, 0, 0);
+  if (candidate.getTime() <= nowMs + 60 * 1000) {
+    candidate.setDate(candidate.getDate() + 1);
+  }
+  return candidate;
 }
 
 export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
@@ -51,8 +74,28 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
 
   // Step 3: conditions
   const [genderCondition, setGenderCondition] = useState<GenderCondition>('any');
-  const [maxParticipants, setMaxParticipants] = useState<number>(4);
-  const [departureMinutes, setDepartureMinutes] = useState<DepartureMinutes>(10);
+  const [capacityChoice, setCapacityChoice] = useState<CapacityChoice>('4');
+
+  // 5-minute interval vertical time wheel state (default ~10 minutes ahead)
+  const [selectedTime, setSelectedTime] = useState<Date>(
+    () => new Date(getEarliestFiveMinSlot(Date.now()).getTime() + 5 * 60 * 1000)
+  );
+  const selectedHour = selectedTime.getHours();
+  const selectedMinute = selectedTime.getMinutes();
+
+  const hourWheelRef = useRef<HTMLDivElement | null>(null);
+  const minuteWheelRef = useRef<HTMLDivElement | null>(null);
+  const ignoreScrollUntilRef = useRef<number>(0);
+  const scrollTimerRef = useRef<{ hour: number | null; minute: number | null }>({
+    hour: null,
+    minute: null,
+  });
+  const dragStateRef = useRef<{
+    el: HTMLDivElement | null;
+    startY: number;
+    startScrollTop: number;
+    moved: boolean;
+  }>({ el: null, startY: 0, startScrollTop: 0, moved: false });
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -71,8 +114,32 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
       if (locationPhotoPreviewUrl) {
         URL.revokeObjectURL(locationPhotoPreviewUrl);
       }
+      if (scrollTimerRef.current.hour) window.clearTimeout(scrollTimerRef.current.hour);
+      if (scrollTimerRef.current.minute) window.clearTimeout(scrollTimerRef.current.minute);
     };
   }, [locationPhotoPreviewUrl]);
+
+  // Keep hour & minute wheel scroll aligned with selected time
+  useEffect(() => {
+    if (step !== 3) return;
+    const itemHeight = 40;
+    ignoreScrollUntilRef.current = Date.now() + 350;
+    if (hourWheelRef.current) {
+      hourWheelRef.current.scrollTo({
+        top: selectedHour * itemHeight,
+        behavior: 'smooth',
+      });
+    }
+    if (minuteWheelRef.current) {
+      const mIdx = MINUTE_OPTIONS.indexOf(selectedMinute as (typeof MINUTE_OPTIONS)[number]);
+      if (mIdx >= 0) {
+        minuteWheelRef.current.scrollTo({
+          top: mIdx * itemHeight,
+          behavior: 'smooth',
+        });
+      }
+    }
+  }, [step, selectedHour, selectedMinute]);
 
   if (blockingRoom) {
     return (
@@ -82,7 +149,7 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
         </div>
         <h2 className="text-lg font-bold text-[#0D1B3E]">이미 참여 중인 방이 있어요</h2>
         <p className="text-sm text-[#435E8D] leading-relaxed">
-          한림택시는 한 번에 하나의 동승방에만 속할 수 있어요. 현재 참여 중인{' '}
+          한림 TAXI는 한 번에 하나의 동승방에만 속할 수 있어요. 현재 참여 중인{' '}
           <strong className="text-[#0D1B3E]">
             {blockingRoom.departure} → {blockingRoom.destination}
           </strong>{' '}
@@ -183,10 +250,92 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
     }
   };
 
+  const selectHourAndMinute = (hour: number, minute: number) => {
+    const target = resolveNextDateForHourMinute(Date.now(), hour, minute);
+    setSelectedTime(target);
+  };
+
+  const applyWheelPosition = (type: 'hour' | 'minute', el: HTMLDivElement) => {
+    const itemHeight = 40;
+    const idx = Math.round(el.scrollTop / itemHeight);
+    if (type === 'hour') {
+      const h = Math.max(0, Math.min(23, idx));
+      if (h !== selectedHour) {
+        selectHourAndMinute(h, selectedMinute);
+      }
+    } else {
+      const mIdx = Math.max(0, Math.min(MINUTE_OPTIONS.length - 1, idx));
+      const nextMin = MINUTE_OPTIONS[mIdx];
+      if (nextMin !== selectedMinute) {
+        selectHourAndMinute(selectedHour, nextMin);
+      }
+    }
+  };
+
+  const handleWheelScroll = (type: 'hour' | 'minute') => {
+    if (Date.now() < ignoreScrollUntilRef.current) return;
+    if (dragStateRef.current.el) return;
+    const el = type === 'hour' ? hourWheelRef.current : minuteWheelRef.current;
+    if (!el) return;
+
+    const existingTimer = scrollTimerRef.current[type];
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+    scrollTimerRef.current[type] = window.setTimeout(() => {
+      applyWheelPosition(type, el);
+    }, 120);
+  };
+
+  const startWheelDrag = (el: HTMLDivElement | null, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!el) return;
+    dragStateRef.current = {
+      el,
+      startY: e.clientY,
+      startScrollTop: el.scrollTop,
+      moved: false,
+    };
+  };
+
+  const moveWheelDrag = (e: React.MouseEvent<HTMLDivElement>) => {
+    const st = dragStateRef.current;
+    if (!st.el) return;
+    const delta = e.clientY - st.startY;
+    if (Math.abs(delta) > 3) {
+      st.moved = true;
+    }
+    st.el.scrollTop = st.startScrollTop - delta;
+  };
+
+  const endWheelDrag = (type: 'hour' | 'minute') => {
+    const st = dragStateRef.current;
+    if (!st.el) return;
+    const el = st.el;
+    const wasMoved = st.moved;
+    dragStateRef.current = { el: null, startY: 0, startScrollTop: 0, moved: false };
+    if (!wasMoved) return;
+    applyWheelPosition(type, el);
+  };
+
   const handleCreateSubmit = async () => {
-    if (!departure || !destination || !locationPhotoBlob) return;
+    if (!departure || !destination) return;
+    const departureAtMs = selectedTime.getTime();
+    const now = Date.now();
+    if (departureAtMs <= now + 30 * 1000) {
+      setError('출발 시간은 현재 시각 이후로 선택해 주세요.');
+      return;
+    }
+    if (!locationPhotoBlob && departureAtMs - now <= 5 * 60 * 1000) {
+      setError('위치 사진을 나중에 올리려면 출발 시간이 최소 5분 이후여야 해요.');
+      return;
+    }
+
     setError('');
     setSubmitting(true);
+
+    const isFlexibleCapacity = capacityChoice === 'any';
+    const maxParticipants = isFlexibleCapacity ? 4 : Number(capacityChoice);
+
     try {
       const roomId = await createRoom(profile, {
         departure,
@@ -194,7 +343,8 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
         locationPhotoBlob,
         genderCondition,
         maxParticipants,
-        departureMinutes,
+        isFlexibleCapacity,
+        departureAtMs,
       });
       onCreated(roomId);
     } catch (err) {
@@ -204,11 +354,29 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
     }
   };
 
-  const estimatedDeparture = new Date(Date.now() + departureMinutes * 60 * 1000);
-  const estHours = estimatedDeparture.getHours();
-  const estMins = estimatedDeparture.getMinutes().toString().padStart(2, '0');
-  const estPeriod = estHours < 12 ? '오전' : '오후';
-  const estHourDisplay = estHours % 12 === 0 ? 12 : estHours % 12;
+  const deferLocationPhoto = () => {
+    stopCamera();
+    if (locationPhotoPreviewUrl) {
+      URL.revokeObjectURL(locationPhotoPreviewUrl);
+      setLocationPhotoPreviewUrl('');
+    }
+    setLocationPhotoBlob(null);
+    setError('');
+    setStep(3);
+  };
+
+  const nowRef = new Date();
+  const isTomorrow =
+    selectedTime.getFullYear() !== nowRef.getFullYear() ||
+    selectedTime.getMonth() !== nowRef.getMonth() ||
+    selectedTime.getDate() !== nowRef.getDate();
+  const estHourStr = selectedHour.toString().padStart(2, '0');
+  const estMinStr = selectedMinute.toString().padStart(2, '0');
+  const minutesAhead = Math.max(1, Math.round((selectedTime.getTime() - Date.now()) / 60000));
+  const aheadLabel =
+    minutesAhead >= 60
+      ? `${Math.floor(minutesAhead / 60)}시간 ${minutesAhead % 60 > 0 ? `${minutesAhead % 60}분 ` : ''}뒤`
+      : `${minutesAhead}분 뒤`;
 
   return (
     <div className="max-w-xl mx-auto space-y-4">
@@ -321,8 +489,8 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
         <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 sm:p-6 space-y-5">
           <div>
             <h2 className="text-lg font-bold text-[#0D1B3E]">현재 위치를 찍어 올려 주세요</h2>
-            <p className="text-xs text-[#435E8D] mt-1">
-              동승자가 내가 서 있는 위치를 바로 찾을 수 있도록 사진이 공유돼요.
+            <p className="text-xs text-[#435E8D] mt-1 leading-relaxed">
+              동승자가 내가 서 있는 위치를 바로 찾을 수 있도록 사진이 공유돼요. 출발 시간 5분 전까지만 올리면 되니 나중에 찍을 수도 있어요.
             </p>
           </div>
 
@@ -418,14 +586,32 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            disabled={!locationPhotoBlob}
-            onClick={() => setStep(3)}
-            className="w-full min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-40 text-white text-sm font-semibold transition-colors"
-          >
-            다음 단계로
-          </button>
+          {locationPhotoBlob ? (
+            <button
+              type="button"
+              onClick={() => setStep(3)}
+              className="w-full min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] text-white text-sm font-semibold transition-colors"
+            >
+              다음 단계로
+            </button>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={deferLocationPhoto}
+                className="min-h-[48px] rounded-xl border border-[#C6DCF7] bg-white hover:bg-[#F4F9FF] text-sm font-semibold text-[#0D1B3E] transition-colors"
+              >
+                나중에
+              </button>
+              <button
+                type="button"
+                disabled
+                className="min-h-[48px] rounded-xl bg-[#1D5CE5] opacity-40 text-white text-sm font-semibold cursor-not-allowed"
+              >
+                다음 단계로
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -472,57 +658,159 @@ export const CreateRoomWizard: React.FC<CreateRoomWizardProps> = ({
 
           <div className="space-y-2">
             <span className="block text-xs font-bold text-[#0D1B3E]">모집 인원 (나 포함)</span>
-            <div className="grid grid-cols-3 gap-2">
-              {[2, 3, 4].map((count) => (
+            <div className="grid grid-cols-4 gap-2">
+              {(
+                [
+                  { value: '2', label: '2명' },
+                  { value: '3', label: '3명' },
+                  { value: '4', label: '4명' },
+                  { value: 'any', label: '상관 없음' },
+                ] as const
+              ).map((opt) => (
                 <button
-                  key={count}
+                  key={opt.value}
                   type="button"
-                  onClick={() => setMaxParticipants(count)}
-                  className={`min-h-[46px] rounded-xl border text-sm font-semibold tabular-nums transition-colors ${
-                    maxParticipants === count
+                  onClick={() => setCapacityChoice(opt.value)}
+                  className={`min-h-[46px] px-1 rounded-xl border text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap transition-colors ${
+                    capacityChoice === opt.value
                       ? 'bg-[#1D5CE5] border-[#1D5CE5] text-white'
                       : 'bg-[#F8FBFF] border-[#D4E4F7] text-[#0D1B3E] hover:bg-[#EBF4FF]'
                   }`}
                 >
-                  {count}명
+                  {opt.label}
                 </button>
               ))}
+            </div>
+            {capacityChoice === 'any' && (
+              <p className="text-[11px] text-[#0284C7] leading-relaxed">
+                최대 4명까지 모이며, 모집자가 원할 때 그 시점에 모인 인원끼리 바로 마감할 수 있어요.
+              </p>
+            )}
+          </div>
+
+          {/* Vertical drag/scroll time picker */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[#0D1B3E] inline-flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#1D5CE5]" />
+                출발 시간
+              </span>
+              <span className="text-xs font-semibold text-[#0284C7] tabular-nums">
+                {aheadLabel} 출발
+              </span>
+            </div>
+
+            <div className="rounded-2xl bg-[#F4F9FF] border border-[#DCE9F8] p-4 space-y-4">
+              <div className="flex items-baseline justify-between">
+                <span className="text-xs font-semibold text-[#435E8D]">
+                  {isTomorrow ? '내일' : '오늘'}
+                </span>
+                <span className="text-2xl font-bold text-[#0D1B3E] tabular-nums">
+                  {estHourStr}시 {estMinStr}분
+                </span>
+              </div>
+
+              {/* Hour & Minute Drag-Scroll Columns */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <span className="block text-[11px] font-semibold text-[#435E8D] text-center mb-1">
+                    시
+                  </span>
+                  <div
+                    ref={hourWheelRef}
+                    onScroll={() => handleWheelScroll('hour')}
+                    onMouseDown={(e) => startWheelDrag(hourWheelRef.current, e)}
+                    onMouseMove={moveWheelDrag}
+                    onMouseUp={() => endWheelDrag('hour')}
+                    onMouseLeave={() => endWheelDrag('hour')}
+                    className="h-32 overflow-y-auto snap-y snap-mandatory rounded-xl bg-white border border-[#DCE9F8] py-10 select-none cursor-grab active:cursor-grabbing"
+                  >
+                    {HOUR_OPTIONS.map((h) => {
+                      const active = h === selectedHour;
+                      return (
+                        <button
+                          key={h}
+                          type="button"
+                          onClick={() => selectHourAndMinute(h, selectedMinute)}
+                          className={`w-full h-10 snap-center flex items-center justify-center text-sm font-bold tabular-nums transition-colors ${
+                            active
+                              ? 'bg-[#EBF4FF] text-[#1D5CE5]'
+                              : 'text-[#435E8D] hover:text-[#0D1B3E]'
+                          }`}
+                        >
+                          {h.toString().padStart(2, '0')}시
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block text-[11px] font-semibold text-[#435E8D] text-center mb-1">
+                    분
+                  </span>
+                  <div
+                    ref={minuteWheelRef}
+                    onScroll={() => handleWheelScroll('minute')}
+                    onMouseDown={(e) => startWheelDrag(minuteWheelRef.current, e)}
+                    onMouseMove={moveWheelDrag}
+                    onMouseUp={() => endWheelDrag('minute')}
+                    onMouseLeave={() => endWheelDrag('minute')}
+                    className="h-32 overflow-y-auto snap-y snap-mandatory rounded-xl bg-white border border-[#DCE9F8] py-10 select-none cursor-grab active:cursor-grabbing"
+                  >
+                    {MINUTE_OPTIONS.map((m) => {
+                      const active = m === selectedMinute;
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => selectHourAndMinute(selectedHour, m)}
+                          className={`w-full h-10 snap-center flex items-center justify-center text-sm font-bold tabular-nums transition-colors ${
+                            active
+                              ? 'bg-[#EBF4FF] text-[#1D5CE5]'
+                              : 'text-[#435E8D] hover:text-[#0D1B3E]'
+                          }`}
+                        >
+                          {m.toString().padStart(2, '0')}분
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-[#0D1B3E]">출발 시간</span>
-              <span className="text-xs text-[#0284C7] font-medium tabular-nums">
-                {estPeriod} {estHourDisplay}:{estMins} 출발 예정
-              </span>
+          {!locationPhotoBlob && selectedTime.getTime() - Date.now() <= 5 * 60 * 1000 && (
+            <div className="rounded-2xl bg-[#EBF4FF] border border-[#C6DCF7] p-3.5 text-xs text-[#0D1B3E] space-y-2">
+              <p className="leading-relaxed">
+                출발 시간이 5분 이내로 남아 지금 바로 위치 사진을 올려야 해요. 출발 시간을 5분 이상 여유 있게 조정하거나 위치 사진을 찍어 주세요.
+              </p>
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                className="font-bold text-[#1D5CE5] underline underline-offset-2"
+              >
+                위치 사진 찍으러 가기
+              </button>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {([10, 20, 30] as DepartureMinutes[]).map((mins) => (
-                <button
-                  key={mins}
-                  type="button"
-                  onClick={() => setDepartureMinutes(mins)}
-                  className={`min-h-[46px] rounded-xl border text-sm font-semibold tabular-nums transition-colors ${
-                    departureMinutes === mins
-                      ? 'bg-[#1D5CE5] border-[#1D5CE5] text-white'
-                      : 'bg-[#F8FBFF] border-[#D4E4F7] text-[#0D1B3E] hover:bg-[#EBF4FF]'
-                  }`}
-                >
-                  {mins}분 후
-                </button>
-              ))}
-            </div>
-          </div>
+          )}
 
           <button
             type="button"
-            disabled={submitting}
+            disabled={
+              submitting ||
+              (!locationPhotoBlob && selectedTime.getTime() - Date.now() <= 5 * 60 * 1000)
+            }
             onClick={() => void handleCreateSubmit()}
             className="w-full min-h-[48px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
           >
             <Check className="w-4 h-4" />
-            {submitting ? '사진 올리고 방 만드는 중...' : '모집방 만들기'}
+            {submitting
+              ? locationPhotoBlob
+                ? '사진 올리고 방 만드는 중...'
+                : '방 만드는 중...'
+              : '모집방 만들기'}
           </button>
         </div>
       )}

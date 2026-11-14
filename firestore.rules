@@ -127,7 +127,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'hostId', 'hostName', 'departure', 'destination', 'locationPhotoUrl',
-          'genderCondition', 'maxParticipants', 'currentParticipants',
+          'genderCondition', 'maxParticipants', 'isFlexibleCapacity', 'currentParticipants',
           'participantIds', 'participantNames', 'departureMinutes',
           'departureAt', 'status', 'createdAt', 'updatedAt'
         ]) &&
@@ -136,15 +136,16 @@ service cloud.firestore {
         isValidLocation(data.departure) &&
         isValidLocation(data.destination) &&
         data.departure != data.destination &&
-        data.locationPhotoUrl is string && data.locationPhotoUrl.size() >= 10 && data.locationPhotoUrl.size() <= 700000 &&
+        data.locationPhotoUrl is string && data.locationPhotoUrl.size() <= 700000 &&
         data.genderCondition in ['male', 'female', 'any'] &&
         data.maxParticipants is int && data.maxParticipants >= 2 && data.maxParticipants <= 4 &&
+        (!('isFlexibleCapacity' in data) || data.isFlexibleCapacity is bool) &&
         data.currentParticipants is int && data.currentParticipants >= 1 && data.currentParticipants <= data.maxParticipants &&
         data.participantIds is list && data.participantIds.size() == data.currentParticipants && data.participantIds.size() >= 1 && data.participantIds.size() <= 4 && data.participantIds[0] is string &&
         data.participantNames is list && data.participantNames.size() == data.currentParticipants && data.participantNames.size() >= 1 && data.participantNames.size() <= 4 && data.participantNames[0] is string &&
-        data.departureMinutes in [10, 20, 30] &&
+        data.departureMinutes is int && data.departureMinutes >= 1 && data.departureMinutes <= 1440 &&
         data.departureAt is timestamp &&
-        data.status in ['open', 'closed', 'settled', 'expired'] &&
+        data.status in ['open', 'closed', 'settled', 'completed', 'expired'] &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -282,12 +283,12 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         incoming().departure == existing().departure &&
         incoming().destination == existing().destination &&
-        incoming().locationPhotoUrl == existing().locationPhotoUrl &&
         incoming().genderCondition == existing().genderCondition &&
         incoming().maxParticipants == existing().maxParticipants &&
+        ((!('isFlexibleCapacity' in existing()) && !('isFlexibleCapacity' in incoming())) || (('isFlexibleCapacity' in existing()) && ('isFlexibleCapacity' in incoming()) && incoming().isFlexibleCapacity == existing().isFlexibleCapacity)) &&
         incoming().departureMinutes == existing().departureMinutes &&
         incoming().departureAt == existing().departureAt &&
-        (existing().status in ['open', 'closed'] || isAdmin()) &&
+        (existing().status in ['open', 'closed', 'settled'] || isAdmin()) &&
         (
           isAdmin() ||
           (
@@ -299,6 +300,7 @@ service cloud.firestore {
             (existing().genderCondition == 'any' || existing().genderCondition == userDoc(request.auth.uid).gender) &&
             incoming().hostId == existing().hostId &&
             incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
             incoming().currentParticipants == existing().currentParticipants + 1 &&
             incoming().participantIds.hasAll(existing().participantIds) &&
             incoming().participantNames.hasAll(existing().participantNames) &&
@@ -316,6 +318,7 @@ service cloud.firestore {
             !(request.auth.uid in incoming().participantIds) &&
             existing().participantIds.hasAll(incoming().participantIds) &&
             existing().participantNames.hasAll(incoming().participantNames) &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
             incoming().currentParticipants == existing().currentParticipants - 1 &&
             incoming().hostId == incoming().participantIds[0] &&
             incoming().hostName == incoming().participantNames[0] &&
@@ -331,6 +334,7 @@ service cloud.firestore {
             existing().hostId == request.auth.uid &&
             incoming().hostId == existing().hostId &&
             incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
             incoming().status == 'expired' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           ) ||
@@ -340,8 +344,33 @@ service cloud.firestore {
             request.time >= existing().departureAt &&
             incoming().hostId == existing().hostId &&
             incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
             incoming().status == 'expired' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'open' &&
+            existing().hostId == request.auth.uid &&
+            ('isFlexibleCapacity' in existing()) &&
+            existing().isFlexibleCapacity == true &&
+            existing().currentParticipants >= 2 &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
+            incoming().status == 'closed' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status in ['open', 'closed'] &&
+            existing().hostId == request.auth.uid &&
+            request.time <= existing().departureAt - duration.value(5, 'm') &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().status == existing().status &&
+            incoming().locationPhotoUrl.size() >= 10 &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['locationPhotoUrl', 'updatedAt'])
           ) ||
           (
             isApprovedUser() &&
@@ -349,13 +378,34 @@ service cloud.firestore {
             existing().hostId == request.auth.uid &&
             incoming().hostId == existing().hostId &&
             incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
             incoming().status == 'settled' &&
             existsAfter(/databases/$(database)/documents/rooms/$(roomId)/settlement/info) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'settled' &&
+            existing().hostId == request.auth.uid &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().locationPhotoUrl == existing().locationPhotoUrl &&
+            incoming().status == 'completed' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           )
         );
 
-      allow delete: if isSignedIn() && isValidId(roomId) && isAdmin();
+      allow delete: if isSignedIn() && isValidId(roomId) && (
+        isAdmin() ||
+        (
+          (
+            existing().status == 'expired' ||
+            (existing().status == 'open' && request.time >= existing().departureAt) ||
+            (existing().status == 'open' && existing().currentParticipants == 1 && existing().hostId == request.auth.uid)
+          ) &&
+          isApprovedUser()
+        )
+      );
 
       match /settlement/{docId} {
         allow get: if isSignedIn() && isValidId(roomId) && isValidId(docId) && (

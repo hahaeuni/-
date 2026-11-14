@@ -7,10 +7,11 @@ import {
   STATION_LOCATIONS,
   TaxiRoom,
 } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HomeRoomListProps {
   rooms: TaxiRoom[];
-  myActiveRooms: TaxiRoom[];
+  myActiveRoom: TaxiRoom | null;
   currentUserId: string;
   nowMs: number;
   onSelectRoom: (roomId: string) => void;
@@ -21,7 +22,7 @@ type RouteFilter = 'all' | 'fromCampus' | 'fromStation';
 
 export const HomeRoomList: React.FC<HomeRoomListProps> = ({
   rooms,
-  myActiveRooms,
+  myActiveRoom,
   currentUserId,
   nowMs,
   onSelectRoom,
@@ -45,48 +46,52 @@ export const HomeRoomList: React.FC<HomeRoomListProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* My Active / Recently Settled Rooms */}
-      {myActiveRooms.length > 0 && (
+      {/* Single Active Room (before settlement account arrives) */}
+      {myActiveRoom && (
         <section aria-label="내 동승방" className="space-y-2.5">
           <h2 className="text-sm font-bold text-[#0D1B3E]">내가 참여 중인 방</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {myActiveRooms.map((room) => {
-              const { clockText, remainingText } = formatDepartureTime(room.departureAt, nowMs);
-              const isHost = room.hostId === currentUserId;
-              const statusLabel =
-                room.status === 'open'
-                  ? '모집 중'
-                  : room.status === 'closed'
-                  ? isHost
-                    ? '정원 마감 · 도착 후 정산 대기'
-                    : '정원 마감 · 이동 중'
-                  : '정산 계좌 도착';
+          {(() => {
+            const { clockText, remainingText } = formatDepartureTime(myActiveRoom.departureAt, nowMs);
+            const isHost = myActiveRoom.hostId === currentUserId;
+            const statusLabel =
+              myActiveRoom.status === 'open'
+                ? '모집 중'
+                : isHost
+                ? '모집 마감 · 도착 후 정산 대기'
+                : '모집 마감 · 이동 중';
 
-              return (
-                <button
-                  key={room.id}
-                  type="button"
-                  onClick={() => onSelectRoom(room.id)}
-                  className="w-full text-left bg-[#0D1B3E] text-white rounded-2xl p-4 sm:p-5 flex items-center justify-between gap-4 hover:bg-[#162D66] transition-colors"
-                >
-                  <div className="min-w-0 space-y-1.5">
-                    <p className="text-xs font-medium text-[#7DD3FC]">{statusLabel}</p>
-                    <p className="text-base font-bold flex items-center gap-1.5 flex-wrap">
-                      <span>{room.departure}</span>
-                      <ArrowRight className="w-4 h-4 text-[#7DD3FC] shrink-0" />
-                      <span>{room.destination}</span>
-                    </p>
-                    <p className="text-xs text-[#BFDBFE] tabular-nums">
-                      {room.status === 'open' ? `${clockText} (${remainingText})` : clockText} ·{' '}
-                      {room.currentParticipants}/{room.maxParticipants}명 ·{' '}
-                      {formatGenderConditionLabel(room.genderCondition)}
-                    </p>
-                  </div>
-                  <ChevronRight className="w-5 h-5 text-[#7DD3FC] shrink-0" />
-                </button>
-              );
-            })}
-          </div>
+            return (
+              <button
+                type="button"
+                onClick={() => onSelectRoom(myActiveRoom.id)}
+                className="w-full text-left bg-[#0D1B3E] text-white rounded-2xl p-4 sm:p-5 flex items-center justify-between gap-4 hover:bg-[#162D66] transition-colors"
+              >
+                <div className="min-w-0 space-y-1.5">
+                  <p className="text-xs font-medium text-[#7DD3FC]">{statusLabel}</p>
+                  <p className="text-base font-bold flex items-center gap-1.5 flex-wrap">
+                    <span>{myActiveRoom.departure}</span>
+                    <ArrowRight className="w-4 h-4 text-[#7DD3FC] shrink-0" />
+                    <span>{myActiveRoom.destination}</span>
+                  </p>
+                  <p className="text-xs text-[#BFDBFE] tabular-nums">
+                    {myActiveRoom.status === 'open' ? `${clockText} (${remainingText})` : clockText} ·{' '}
+                    {myActiveRoom.currentParticipants}/{myActiveRoom.maxParticipants}명
+                    {myActiveRoom.isFlexibleCapacity ? ' (상관없음)' : ''} ·{' '}
+                    {formatGenderConditionLabel(myActiveRoom.genderCondition)}
+                  </p>
+                  {isHost &&
+                    !myActiveRoom.locationPhotoUrl &&
+                    myActiveRoom.departureAt &&
+                    myActiveRoom.departureAt.toMillis() - nowMs > 5 * 60 * 1000 && (
+                      <p className="text-xs font-semibold text-[#BAE6FD]">
+                        출발 5분 전까지 현재 위치 사진을 등록해 주세요
+                      </p>
+                    )}
+                </div>
+                <ChevronRight className="w-5 h-5 text-[#7DD3FC] shrink-0" />
+              </button>
+            );
+          })()}
         </section>
       )}
 
@@ -105,14 +110,14 @@ export const HomeRoomList: React.FC<HomeRoomListProps> = ({
               [
                 { key: 'all', label: '전체' },
                 { key: 'fromCampus', label: '학교 출발' },
-                { key: 'fromStation', label: '역·터미널 출발' },
+                { key: 'fromStation', label: '역·터미널' },
               ] as const
             ).map((tab) => (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setFilter(tab.key)}
-                className={`min-h-[38px] px-3 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[38px] px-3.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
                   filter === tab.key
                     ? 'bg-white text-[#0D1B3E] shadow-sm'
                     : 'text-[#435E8D] hover:text-[#0D1B3E]'
@@ -186,6 +191,7 @@ export const HomeRoomList: React.FC<HomeRoomListProps> = ({
                       <span className="inline-flex items-center gap-1 font-semibold text-[#0D1B3E]">
                         <Users className="w-3.5 h-3.5 text-[#1D5CE5]" />
                         {room.currentParticipants}/{room.maxParticipants}명
+                        {room.isFlexibleCapacity ? ' · 상관없음' : ''}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span className="font-medium text-[#0D1B3E]">
@@ -199,6 +205,8 @@ export const HomeRoomList: React.FC<HomeRoomListProps> = ({
           </div>
         )}
       </section>
+
+      <PWAInstallButton variant="card" />
     </div>
   );
 };

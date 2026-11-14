@@ -18,7 +18,7 @@ import {
   logoutUser,
   signUpWithUsername,
 } from '../lib/authService';
-import { compressFileToBlob } from '../lib/imageUtils';
+import { compressStudentIdWithThumbnail } from '../lib/imageUtils';
 import { BANKS, Gender, LIMITS } from '../types';
 
 interface AuthScreenProps {
@@ -57,6 +57,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [accountNumber, setAccountNumber] = useState('');
   const [accountHolder, setAccountHolder] = useState('');
   const [studentIdBlob, setStudentIdBlob] = useState<Blob | null>(null);
+  const [studentIdThumbBlob, setStudentIdThumbBlob] = useState<Blob | null>(null);
   const [studentIdPreviewUrl, setStudentIdPreviewUrl] = useState('');
   const [agreedToPrivacy, setAgreedToPrivacy] = useState(false);
   const [showPrivacyDetails, setShowPrivacyDetails] = useState(false);
@@ -91,11 +92,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     if (!file) return;
     setError('');
     try {
-      const { blob, previewUrl } = await compressFileToBlob(file);
+      const { blob, thumbnailBlob, previewUrl } = await compressStudentIdWithThumbnail(file);
       if (studentIdPreviewUrl) {
         URL.revokeObjectURL(studentIdPreviewUrl);
       }
       setStudentIdBlob(blob);
+      setStudentIdThumbBlob(thumbnailBlob);
       setStudentIdPreviewUrl(previewUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : '학생증 사진을 처리하지 못했어요.');
@@ -150,6 +152,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           accountNumber,
           accountHolder,
           studentIdPhotoBlob: studentIdBlob,
+          studentIdThumbBlob: studentIdThumbBlob ?? undefined,
           agreedToPrivacy,
         });
       } else {
@@ -163,6 +166,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           accountNumber,
           accountHolder,
           studentIdPhotoBlob: studentIdBlob,
+          studentIdThumbBlob: studentIdThumbBlob ?? undefined,
           agreedToPrivacy,
         });
       }
@@ -178,10 +182,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       <div className="w-full max-w-md mx-auto">
         {/* Brand Header */}
         <div className="mb-6 text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#1D5CE5] text-white font-bold text-xl mb-3 shadow-sm">
-            한림
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#0D1B3E]">한림택시</h1>
+          <img
+            src="/pwa-192x192.png"
+            alt="한림 TAXI 아이콘"
+            className="w-16 h-16 rounded-2xl mx-auto mb-3 border border-[#DCE9F8] shadow-sm object-cover"
+          />
+          <h1 className="text-2xl font-bold tracking-tight text-[#0D1B3E]">한림 TAXI</h1>
           <p className="mt-1.5 text-sm text-[#435E8D]">
             한림대학교 학생들을 위한 춘천 택시 동승 서비스
           </p>

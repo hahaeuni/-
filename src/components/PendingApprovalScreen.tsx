@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, Camera, Clock, LogOut, RefreshCw, Shield } from 'lucide-react';
 import { logoutUser, resubmitRejectedProfile } from '../lib/authService';
-import { compressFileToBlob } from '../lib/imageUtils';
+import { compressStudentIdWithThumbnail } from '../lib/imageUtils';
 import { BANKS, Gender, LIMITS, UserProfile } from '../types';
 
 interface PendingApprovalScreenProps {
@@ -22,6 +22,7 @@ export const PendingApprovalScreen: React.FC<PendingApprovalScreenProps> = ({
   const [accountNumber, setAccountNumber] = useState(profile.accountNumber);
   const [accountHolder, setAccountHolder] = useState(profile.accountHolder);
   const [studentIdBlob, setStudentIdBlob] = useState<Blob | null>(null);
+  const [studentIdThumbBlob, setStudentIdThumbBlob] = useState<Blob | null>(null);
   const [studentIdPreviewUrl, setStudentIdPreviewUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -39,11 +40,12 @@ export const PendingApprovalScreen: React.FC<PendingApprovalScreenProps> = ({
     if (!file) return;
     setError('');
     try {
-      const { blob, previewUrl } = await compressFileToBlob(file);
+      const { blob, thumbnailBlob, previewUrl } = await compressStudentIdWithThumbnail(file);
       if (studentIdPreviewUrl) {
         URL.revokeObjectURL(studentIdPreviewUrl);
       }
       setStudentIdBlob(blob);
+      setStudentIdThumbBlob(thumbnailBlob);
       setStudentIdPreviewUrl(previewUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : '사진을 불러오지 못했어요.');
@@ -67,6 +69,7 @@ export const PendingApprovalScreen: React.FC<PendingApprovalScreenProps> = ({
         accountNumber,
         accountHolder,
         studentIdPhotoBlob: studentIdBlob,
+        studentIdThumbBlob: studentIdThumbBlob ?? undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : '다시 신청하지 못했어요.');
@@ -84,7 +87,7 @@ export const PendingApprovalScreen: React.FC<PendingApprovalScreenProps> = ({
           </div>
           <h1 className="text-xl font-bold text-[#0D1B3E]">승인을 기다리고 있어요</h1>
           <p className="mt-2.5 text-sm text-[#435E8D] leading-relaxed">
-            관리자가 학생증을 확인한 뒤 승인하면 바로 한림택시를 이용할 수 있어요.
+            관리자가 학생증을 확인한 뒤 승인하면 바로 한림 TAXI를 이용할 수 있어요.
           </p>
 
           <div className="mt-6 pt-5 border-t border-[#E6F0FC] flex flex-col gap-2.5">

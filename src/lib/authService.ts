@@ -40,6 +40,7 @@ import { leaveRoom } from './roomService';
 import {
   deleteStudentIdPhotoFromStorage,
   fetchPrivateStudentIdPhotoUrl,
+  fetchStudentIdThumbnailUrl,
   uploadStudentIdPhoto,
 } from './storageService';
 
@@ -53,6 +54,7 @@ export interface SignUpInput {
   accountNumber: string;
   accountHolder: string;
   studentIdPhotoBlob: Blob;
+  studentIdThumbBlob?: Blob;
   agreedToPrivacy: boolean;
 }
 
@@ -65,6 +67,7 @@ export interface GoogleCompleteProfileInput {
   accountNumber: string;
   accountHolder: string;
   studentIdPhotoBlob: Blob;
+  studentIdThumbBlob?: Blob;
   agreedToPrivacy: boolean;
 }
 
@@ -169,7 +172,11 @@ export async function signUpWithUsername(input: SignUpInput): Promise<void> {
       throw new Error('이미 사용 중인 아이디예요.');
     }
 
-    const storagePath = await uploadStudentIdPhoto(uid, input.studentIdPhotoBlob);
+    const storagePath = await uploadStudentIdPhoto(
+      uid,
+      input.studentIdPhotoBlob,
+      input.studentIdThumbBlob
+    );
 
     const batch = writeBatch(db);
     batch.set(usernameRef, {
@@ -255,7 +262,11 @@ export async function completeGoogleProfile(input: GoogleCompleteProfileInput): 
     throw new Error('이미 사용 중인 아이디예요. 다른 아이디를 입력해 주세요.');
   }
 
-  const storagePath = await uploadStudentIdPhoto(user.uid, input.studentIdPhotoBlob);
+  const storagePath = await uploadStudentIdPhoto(
+    user.uid,
+    input.studentIdPhotoBlob,
+    input.studentIdThumbBlob
+  );
 
   try {
     const batch = writeBatch(db);
@@ -298,6 +309,7 @@ export async function resubmitRejectedProfile(
     accountNumber: string;
     accountHolder: string;
     studentIdPhotoBlob: Blob;
+    studentIdThumbBlob?: Blob;
   }
 ): Promise<void> {
   const clean = validateProfileFields({
@@ -306,7 +318,11 @@ export async function resubmitRejectedProfile(
     agreedToPrivacy: true,
   });
 
-  const storagePath = await uploadStudentIdPhoto(profile.uid, input.studentIdPhotoBlob);
+  const storagePath = await uploadStudentIdPhoto(
+    profile.uid,
+    input.studentIdPhotoBlob,
+    input.studentIdThumbBlob
+  );
 
   try {
     await updateDoc(doc(db, 'users', profile.uid), {
@@ -439,6 +455,13 @@ export async function deleteMyAccount(
 
 export async function logoutUser(): Promise<void> {
   await signOut(auth);
+}
+
+export async function getStudentIdThumbnail(
+  userId: string,
+  studentIdPhotoPath?: string
+): Promise<{ url: string; isThumbnail: boolean } | null> {
+  return fetchStudentIdThumbnailUrl(userId, studentIdPhotoPath);
 }
 
 export async function getStudentIdPhoto(

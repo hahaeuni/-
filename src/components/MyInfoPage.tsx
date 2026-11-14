@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  Bell,
   Check,
   KeyRound,
   LogOut,
@@ -14,13 +15,28 @@ import {
   logoutUser,
   updateMyProfile,
 } from '../lib/authService';
+import {
+  BrowserNotificationPermission,
+  isPushEnabledPreference,
+  requestBrowserNotificationPermission,
+  setPushEnabledPreference,
+  showBrowserPushNotification,
+} from '../lib/notificationService';
 import { BANKS, formatGenderLabel, LIMITS, UserProfile } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface MyInfoPageProps {
   profile: UserProfile;
+  notificationPermission: BrowserNotificationPermission;
+  onNotificationPermissionChange: (next: BrowserNotificationPermission) => void;
 }
 
-export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
+export const MyInfoPage: React.FC<MyInfoPageProps> = ({
+  profile,
+  notificationPermission,
+  onNotificationPermissionChange,
+}) => {
+  const [pushEnabled, setPushEnabled] = useState(() => isPushEnabledPreference());
   const [name, setName] = useState(profile.name);
   const [phone, setPhone] = useState(profile.phone);
   const [bankName, setBankName] = useState(
@@ -108,6 +124,48 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
       });
       setDeleting(false);
       setShowDeleteModal(false);
+    }
+  };
+
+  const handleRequestNotifications = async () => {
+    setFeedback(null);
+    const next = await requestBrowserNotificationPermission();
+    onNotificationPermissionChange(next);
+    if (next === 'granted') {
+      setPushEnabled(true);
+      setFeedback({ type: 'ok', text: '실시간 브라우저 푸시 알림이 켜졌어요.' });
+    } else if (next === 'denied') {
+      setFeedback({
+        type: 'err',
+        text: '브라우저에서 알림이 차단되어 있어요. 브라우저 사이트 설정에서 알림을 허용해 주세요.',
+      });
+    }
+  };
+
+  const handleTogglePush = () => {
+    const next = !pushEnabled;
+    setPushEnabled(next);
+    setPushEnabledPreference(next);
+    setFeedback({
+      type: 'ok',
+      text: next ? '실시간 알림을 켰어요.' : '실시간 알림을 껐어요.',
+    });
+  };
+
+  const handleTestNotification = async () => {
+    setFeedback(null);
+    const sent = await showBrowserPushNotification({
+      title: '한림 TAXI · 알림 테스트',
+      body: '동승자 참여, 모집 마감, 출발 6분 전 위치 사진 알림이 정상적으로 도착해요.',
+      tag: `test-${Date.now()}`,
+    });
+    if (sent) {
+      setFeedback({ type: 'ok', text: '테스트 알림을 보냈어요.' });
+    } else {
+      setFeedback({
+        type: 'err',
+        text: '알림이 꺼져 있거나 브라우저 알림 권한이 없어요.',
+      });
     }
   };
 
@@ -343,6 +401,74 @@ export const MyInfoPage: React.FC<MyInfoPageProps> = ({ profile }) => {
           구글 계정으로 로그인한 회원이에요. 비밀번호는 구글 계정 설정에서 관리할 수 있어요.
         </div>
       )}
+
+      {/* Browser Push Notification & PWA Install Settings */}
+      <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 sm:p-6 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-bold text-[#0D1B3E] flex items-center gap-2">
+              <Bell className="w-4 h-4 text-[#1D5CE5]" />
+              실시간 브라우저 푸시 알림
+            </h3>
+            <p className="text-xs text-[#435E8D] mt-1 leading-relaxed">
+              동승자 참여, 모집 마감, 출발 6분 전 위치 사진 미등록 시 브라우저 알림을 받아요.
+            </p>
+          </div>
+          <span className="text-xs font-bold text-[#1D5CE5] whitespace-nowrap shrink-0">
+            {notificationPermission === 'unsupported'
+              ? '지원 안 함'
+              : notificationPermission === 'denied'
+              ? '차단됨'
+              : notificationPermission === 'default'
+              ? '허용 필요'
+              : pushEnabled
+              ? '켜짐'
+              : '꺼짐'}
+          </span>
+        </div>
+
+        {notificationPermission === 'default' && (
+          <button
+            type="button"
+            onClick={() => void handleRequestNotifications()}
+            className="w-full min-h-[46px] rounded-xl bg-[#1D5CE5] hover:bg-[#1649BE] text-white text-sm font-semibold transition-colors"
+          >
+            브라우저 알림 허용하기
+          </button>
+        )}
+
+        {notificationPermission === 'granted' && (
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={handleTogglePush}
+              className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors ${
+                pushEnabled
+                  ? 'border-[#1D5CE5] bg-[#EBF4FF] text-[#1D5CE5]'
+                  : 'border-[#D4E4F7] bg-[#F8FBFF] text-[#435E8D]'
+              }`}
+            >
+              {pushEnabled ? '알림 끄기' : '알림 켜기'}
+            </button>
+            <button
+              type="button"
+              disabled={!pushEnabled}
+              onClick={() => void handleTestNotification()}
+              className="min-h-[44px] rounded-xl border border-[#C6DCF7] bg-white hover:bg-[#F4F9FF] disabled:opacity-45 text-xs font-semibold text-[#0D1B3E] transition-colors"
+            >
+              테스트 알림 보내기
+            </button>
+          </div>
+        )}
+
+        {notificationPermission === 'denied' && (
+          <p className="text-xs text-[#435E8D] bg-[#F4F9FF] rounded-2xl p-3.5 leading-relaxed">
+            현재 브라우저에서 알림 권한이 차단되어 있어요. 주소창 옆 사이트 설정 아이콘에서 알림을 &lsquo;허용&rsquo;으로 바꾼 뒤 새로고침해 주세요.
+          </p>
+        )}
+      </div>
+
+      <PWAInstallButton variant="card" />
 
       {/* Account Deletion */}
       <div className="bg-white border border-[#D4E4F7] rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
