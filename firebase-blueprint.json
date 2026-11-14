@@ -1,0 +1,319 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "한림택시 회원 프로필 및 승인 상태 정보 (PII 포함, 본인과 관리자만 조회 가능)",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_]+$"
+        },
+        "authProvider": {
+          "type": "string",
+          "enum": ["password", "google", "phone"]
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 9,
+          "maxLength": 20
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["male", "female"]
+        },
+        "bankName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "accountNumber": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 40
+        },
+        "accountHolder": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "rejectionReason": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "agreedToPrivacy": {
+          "type": "boolean"
+        },
+        "hasStudentIdPhoto": {
+          "type": "boolean"
+        },
+        "studentIdPhotoPath": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "username",
+        "authProvider",
+        "email",
+        "name",
+        "phone",
+        "gender",
+        "bankName",
+        "accountNumber",
+        "accountHolder",
+        "status",
+        "agreedToPrivacy",
+        "hasStudentIdPhoto",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UsernameLookup": {
+      "title": "UsernameLookup",
+      "description": "아이디 중복 확인용 최소 매핑 (PII 미포함)",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "관리자 권한 부여 문서",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "TaxiRoom": {
+      "title": "TaxiRoom",
+      "description": "택시 동승 모집방",
+      "type": "object",
+      "properties": {
+        "hostId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "departure": {
+          "type": "string",
+          "enum": [
+            "춘천 시외버스터미널",
+            "춘천역",
+            "남춘천역",
+            "한림대 CLC",
+            "한림대 본관",
+            "한림대 사회경영관"
+          ]
+        },
+        "destination": {
+          "type": "string",
+          "enum": [
+            "춘천 시외버스터미널",
+            "춘천역",
+            "남춘천역",
+            "한림대 CLC",
+            "한림대 본관",
+            "한림대 사회경영관"
+          ]
+        },
+        "locationPhotoUrl": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "genderCondition": {
+          "type": "string",
+          "enum": ["male", "female", "any"]
+        },
+        "maxParticipants": {
+          "type": "integer"
+        },
+        "currentParticipants": {
+          "type": "integer"
+        },
+        "participantIds": {
+          "type": "array"
+        },
+        "participantNames": {
+          "type": "array"
+        },
+        "departureMinutes": {
+          "type": "integer"
+        },
+        "departureAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed", "settled", "expired"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "hostId",
+        "hostName",
+        "departure",
+        "destination",
+        "locationPhotoUrl",
+        "genderCondition",
+        "maxParticipants",
+        "currentParticipants",
+        "participantIds",
+        "participantNames",
+        "departureMinutes",
+        "departureAt",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoomSettlement": {
+      "title": "RoomSettlement",
+      "description": "동승방 정산 계좌 정보 (해당 방 참가자만 열람 가능)",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "totalFare": {
+          "type": "integer"
+        },
+        "participantCount": {
+          "type": "integer"
+        },
+        "perPersonAmount": {
+          "type": "integer"
+        },
+        "bankName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "accountNumber": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 40
+        },
+        "accountHolder": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "roomId",
+        "hostId",
+        "totalFare",
+        "participantCount",
+        "perPersonAmount",
+        "bankName",
+        "accountNumber",
+        "accountHolder",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "회원 개인정보 및 승인 상태 (본인과 관리자만 조회 가능)"
+    },
+    "/usernames/{username}": {
+      "schema": { "$ref": "#/entities/UsernameLookup" },
+      "description": "아이디 중복 체크를 위한 최소 문서"
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "관리자 계정 목록"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/TaxiRoom" },
+      "description": "실시간 택시 동승 모집방 목록"
+    },
+    "/rooms/{roomId}/settlement/{docId}": {
+      "schema": { "$ref": "#/entities/RoomSettlement" },
+      "description": "정산 금액 및 모집자 계좌 정보 (같은 방 참가자만 열람 가능)"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 기본 거부 (단, 관리자는 전체 읽기 가능)
+    match /{allPaths=**} {
+      allow read: if isBootstrappedAdmin();
+      allow write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && (
+        request.auth.uid == 'MAAA6M66iMRXh42cyYrcdk9yYLB2' ||
+        (request.auth.token.email == 'un54208@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    // 비공개 학생증 사진: 본인과 관리자만 조회·삭제 가능, 본인만 업로드 가능
+    match /student-ids/{userId}/{fileName} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin());
+      allow write: if isSignedIn() && request.auth.uid == userId &&
+        request.resource != null &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin());
+    }
+
+    // 동승방 현재 위치 사진: 로그인된 회원 조회 가능, 본인 업로드 가능
+    match /rooms/{roomId}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() &&
+        request.resource != null &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && isBootstrappedAdmin();
+    }
+  }
+}

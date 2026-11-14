@@ -1,0 +1,6 @@
+{
+  "name": "한림택시",
+  "description": "한림대학교 학생들을 위한 춘천 주요 거점 실시간 택시 동승 매칭 서비스",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

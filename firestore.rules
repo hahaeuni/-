@@ -1,0 +1,396 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && (
+        request.auth.uid == 'MAAA6M66iMRXh42cyYrcdk9yYLB2' ||
+        (request.auth.token.email == 'un54208@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() ||
+        (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    function isApprovedUser() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc(request.auth.uid).status == 'approved';
+    }
+
+    function isValidLocation(loc) {
+      return loc in [
+        '춘천 시외버스터미널',
+        '춘천역',
+        '남춘천역',
+        '한림대 CLC',
+        '한림대 본관',
+        '한림대 사회경영관'
+      ];
+    }
+
+    // 3. Entity Validation Helpers
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'username', 'authProvider', 'email', 'name', 'phone',
+          'gender', 'bankName', 'accountNumber', 'accountHolder',
+          'status', 'agreedToPrivacy', 'hasStudentIdPhoto', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'username', 'authProvider', 'email', 'name', 'phone',
+          'gender', 'bankName', 'accountNumber', 'accountHolder',
+          'status', 'rejectionReason', 'agreedToPrivacy', 'hasStudentIdPhoto',
+          'studentIdPhotoPath', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.username is string && data.username.size() >= 3 && data.username.size() <= 40 && data.username.matches('^[a-zA-Z0-9_]+$') &&
+        data.authProvider in ['password', 'google', 'phone'] &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 40 &&
+        data.phone is string && data.phone.size() >= 9 && data.phone.size() <= 20 &&
+        data.gender in ['male', 'female'] &&
+        data.bankName is string && data.bankName.size() >= 1 && data.bankName.size() <= 30 &&
+        data.accountNumber is string && data.accountNumber.size() >= 4 && data.accountNumber.size() <= 40 &&
+        data.accountHolder is string && data.accountHolder.size() >= 1 && data.accountHolder.size() <= 40 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 200)) &&
+        (!('studentIdPhotoPath' in data) || (data.studentIdPhotoPath is string && data.studentIdPhotoPath.size() <= 200)) &&
+        data.agreedToPrivacy == true &&
+        data.hasStudentIdPhoto is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStudentIdDoc(data) {
+      return data.keys().hasAll(['userId', 'imageDataUrl', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'imageDataUrl', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.imageDataUrl is string && data.imageDataUrl.size() >= 20 && data.imageDataUrl.size() <= 700000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUsernameLookup(data) {
+      return data.keys().hasAll(['uid', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTaxiRoom(data) {
+      return data.keys().hasAll([
+          'hostId', 'hostName', 'departure', 'destination', 'locationPhotoUrl',
+          'genderCondition', 'maxParticipants', 'currentParticipants',
+          'participantIds', 'participantNames', 'departureMinutes',
+          'departureAt', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'hostId', 'hostName', 'departure', 'destination', 'locationPhotoUrl',
+          'genderCondition', 'maxParticipants', 'currentParticipants',
+          'participantIds', 'participantNames', 'departureMinutes',
+          'departureAt', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.hostId is string && data.hostId.size() >= 1 && data.hostId.size() <= 128 && data.hostId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 40 &&
+        isValidLocation(data.departure) &&
+        isValidLocation(data.destination) &&
+        data.departure != data.destination &&
+        data.locationPhotoUrl is string && data.locationPhotoUrl.size() >= 10 && data.locationPhotoUrl.size() <= 700000 &&
+        data.genderCondition in ['male', 'female', 'any'] &&
+        data.maxParticipants is int && data.maxParticipants >= 2 && data.maxParticipants <= 4 &&
+        data.currentParticipants is int && data.currentParticipants >= 1 && data.currentParticipants <= data.maxParticipants &&
+        data.participantIds is list && data.participantIds.size() == data.currentParticipants && data.participantIds.size() >= 1 && data.participantIds.size() <= 4 && data.participantIds[0] is string &&
+        data.participantNames is list && data.participantNames.size() == data.currentParticipants && data.participantNames.size() >= 1 && data.participantNames.size() <= 4 && data.participantNames[0] is string &&
+        data.departureMinutes in [10, 20, 30] &&
+        data.departureAt is timestamp &&
+        data.status in ['open', 'closed', 'settled', 'expired'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSettlement(data) {
+      return data.keys().hasAll([
+          'roomId', 'hostId', 'totalFare', 'participantCount', 'perPersonAmount',
+          'bankName', 'accountNumber', 'accountHolder', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'roomId', 'hostId', 'totalFare', 'participantCount', 'perPersonAmount',
+          'bankName', 'accountNumber', 'accountHolder', 'createdAt', 'updatedAt'
+        ]) &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 128 && data.roomId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.hostId is string && data.hostId.size() >= 1 && data.hostId.size() <= 128 && data.hostId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.totalFare is int && data.totalFare >= 100 && data.totalFare <= 500000 &&
+        data.participantCount is int && data.participantCount >= 2 && data.participantCount <= 4 &&
+        data.perPersonAmount is int && data.perPersonAmount >= 25 && data.perPersonAmount <= 500000 &&
+        data.bankName is string && data.bankName.size() >= 1 && data.bankName.size() <= 30 &&
+        data.accountNumber is string && data.accountNumber.size() >= 4 && data.accountNumber.size() <= 40 &&
+        data.accountHolder is string && data.accountHolder.size() >= 1 && data.accountHolder.size() <= 40 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isSignedIn() && isValidId(userId) && isOwner(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().hasStudentIdPhoto == true &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().username == existing().username &&
+        incoming().authProvider == existing().authProvider &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().status == existing().status &&
+            incoming().hasStudentIdPhoto == existing().hasStudentIdPhoto &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'phone', 'bankName', 'accountNumber', 'accountHolder', 'updatedAt'
+            ])
+          ) ||
+          (
+            isOwner(userId) &&
+            existing().status == 'rejected' &&
+            incoming().status == 'pending' &&
+            incoming().hasStudentIdPhoto == true &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'phone', 'gender', 'bankName', 'accountNumber', 'accountHolder',
+              'status', 'rejectionReason', 'hasStudentIdPhoto', 'studentIdPhotoPath', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+
+      match /private/{docId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isSignedIn() && isValidId(userId) && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+
+        allow create: if isSignedIn() && isValidId(userId) && docId == 'studentId' && isOwner(userId) &&
+          isValidStudentIdDoc(incoming()) &&
+          incoming().userId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+
+        allow update: if isSignedIn() && isValidId(userId) && docId == 'studentId' && isOwner(userId) &&
+          isValidStudentIdDoc(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['imageDataUrl', 'updatedAt']);
+
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    match /usernames/{username} {
+      allow get: if isSignedIn() && isValidId(username);
+      allow list: if isBootstrappedAdmin();
+      allow create: if isSignedIn() && isValidId(username) &&
+        isValidUsernameLookup(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow delete: if isSignedIn() && isValidId(username) && (existing().uid == request.auth.uid || isAdmin());
+    }
+
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin() && isValidId(userId) && isValidAdminRecord(incoming()) &&
+        incoming().createdAt == request.time;
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isSignedIn() && isValidId(roomId) && (
+        isAdmin() ||
+        (isApprovedUser() && (existing().status == 'open' || request.auth.uid in existing().participantIds))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.status == 'open' ||
+        request.auth.uid in resource.data.participantIds ||
+        isBootstrappedAdmin()
+      );
+
+      allow create: if isSignedIn() && isValidId(roomId) && isValidTaxiRoom(incoming()) &&
+        isApprovedUser() &&
+        incoming().hostId == request.auth.uid &&
+        incoming().status == 'open' &&
+        incoming().currentParticipants == 1 &&
+        incoming().participantIds.size() == 1 &&
+        incoming().participantIds[0] == request.auth.uid &&
+        (incoming().genderCondition == 'any' || incoming().genderCondition == userDoc(request.auth.uid).gender) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().departureAt > request.time;
+
+      allow update: if isSignedIn() && isValidId(roomId) && isValidTaxiRoom(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().departure == existing().departure &&
+        incoming().destination == existing().destination &&
+        incoming().locationPhotoUrl == existing().locationPhotoUrl &&
+        incoming().genderCondition == existing().genderCondition &&
+        incoming().maxParticipants == existing().maxParticipants &&
+        incoming().departureMinutes == existing().departureMinutes &&
+        incoming().departureAt == existing().departureAt &&
+        (existing().status in ['open', 'closed'] || isAdmin()) &&
+        (
+          isAdmin() ||
+          (
+            isApprovedUser() &&
+            existing().status == 'open' &&
+            existing().departureAt > request.time &&
+            !(request.auth.uid in existing().participantIds) &&
+            existing().currentParticipants < existing().maxParticipants &&
+            (existing().genderCondition == 'any' || existing().genderCondition == userDoc(request.auth.uid).gender) &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().currentParticipants == existing().currentParticipants + 1 &&
+            incoming().participantIds.hasAll(existing().participantIds) &&
+            incoming().participantNames.hasAll(existing().participantNames) &&
+            request.auth.uid in incoming().participantIds &&
+            incoming().status == (incoming().currentParticipants == existing().maxParticipants ? 'closed' : 'open') &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'currentParticipants', 'participantIds', 'participantNames', 'status', 'updatedAt'
+            ])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'open' &&
+            existing().currentParticipants > 1 &&
+            request.auth.uid in existing().participantIds &&
+            !(request.auth.uid in incoming().participantIds) &&
+            existing().participantIds.hasAll(incoming().participantIds) &&
+            existing().participantNames.hasAll(incoming().participantNames) &&
+            incoming().currentParticipants == existing().currentParticipants - 1 &&
+            incoming().hostId == incoming().participantIds[0] &&
+            incoming().hostName == incoming().participantNames[0] &&
+            incoming().status == 'open' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'hostId', 'hostName', 'currentParticipants', 'participantIds', 'participantNames', 'updatedAt'
+            ])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'open' &&
+            existing().currentParticipants == 1 &&
+            existing().hostId == request.auth.uid &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().status == 'expired' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'open' &&
+            request.time >= existing().departureAt &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().status == 'expired' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            isApprovedUser() &&
+            existing().status == 'closed' &&
+            existing().hostId == request.auth.uid &&
+            incoming().hostId == existing().hostId &&
+            incoming().hostName == existing().hostName &&
+            incoming().status == 'settled' &&
+            existsAfter(/databases/$(database)/documents/rooms/$(roomId)/settlement/info) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn() && isValidId(roomId) && isAdmin();
+
+      match /settlement/{docId} {
+        allow get: if isSignedIn() && isValidId(roomId) && isValidId(docId) && (
+          isAdmin() ||
+          (isApprovedUser() && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.participantIds)
+        );
+        allow list: if isBootstrappedAdmin();
+
+        allow create: if isSignedIn() && isValidId(roomId) && docId == 'info' &&
+          isApprovedUser() &&
+          isValidSettlement(incoming()) &&
+          incoming().roomId == roomId &&
+          incoming().hostId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status in ['closed', 'settled'] &&
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'settled';
+
+        allow update: if isSignedIn() && isValidId(roomId) && docId == 'info' &&
+          isApprovedUser() &&
+          isValidSettlement(incoming()) &&
+          incoming().roomId == existing().roomId &&
+          incoming().hostId == existing().hostId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status in ['closed', 'settled'] &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'totalFare', 'participantCount', 'perPersonAmount',
+            'bankName', 'accountNumber', 'accountHolder', 'updatedAt'
+          ]);
+
+        allow delete: if isSignedIn() && isValidId(roomId) && isValidId(docId) && isAdmin();
+      }
+    }
+  }
+}
