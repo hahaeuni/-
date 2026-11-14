@@ -217,13 +217,29 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       ? '계좌 전송됨 · 정산 진행 중'
       : '정산 완료';
 
+  const formatActionError = (err: unknown, fallback: string): string => {
+    if (!(err instanceof Error) || !err.message) return fallback;
+    if (err.message.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(err.message) as { error?: string };
+        if (parsed?.error?.includes('Missing or insufficient permissions')) {
+          return '요청 권한이 없거나 방 상태가 이미 변경되었어요. 잠시 후 다시 확인해 주세요.';
+        }
+      } catch {
+        // Ignore JSON parse fallback
+      }
+      return fallback;
+    }
+    return err.message;
+  };
+
   const handleJoin = async () => {
     setError('');
     setActionBusy(true);
     try {
       await joinRoom(room.id, profile);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '방에 참가하지 못했어요.');
+      setError(formatActionError(err, '방에 참가하지 못했어요.'));
     } finally {
       setActionBusy(false);
     }
@@ -235,7 +251,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
     try {
       await closeFlexibleRoom(room.id, profile.uid);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '모집을 마감하지 못했어요.');
+      setError(formatActionError(err, '모집을 마감하지 못했어요.'));
     } finally {
       setActionBusy(false);
     }
@@ -248,7 +264,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       await leaveRoom(room.id, profile.uid);
       onBack();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '방을 나가지 못했어요.');
+      setError(formatActionError(err, '방을 나가지 못했어요.'));
     } finally {
       setActionBusy(false);
     }
@@ -262,7 +278,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       await sendRoomSettlement(room.id, profile, parsedFare, room.currentParticipants);
       setShowSettlementForm(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '정산 정보를 전송하지 못했어요.');
+      setError(formatActionError(err, '정산 정보를 전송하지 못했어요.'));
     } finally {
       setActionBusy(false);
     }
@@ -275,7 +291,7 @@ export const RoomDetailView: React.FC<RoomDetailViewProps> = ({
       await completeRoomSettlement(room.id, profile.uid);
       onBack();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '정산 완료 처리에 실패했어요.');
+      setError(formatActionError(err, '정산 완료 처리에 실패했어요.'));
     } finally {
       setActionBusy(false);
     }

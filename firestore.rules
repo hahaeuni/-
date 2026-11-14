@@ -32,7 +32,12 @@ service cloud.firestore {
     function isBootstrappedAdmin() {
       return isSignedIn() && (
         request.auth.uid == 'MAAA6M66iMRXh42cyYrcdk9yYLB2' ||
-        (request.auth.token.email == 'un54208@gmail.com' && request.auth.token.email_verified == true)
+        (
+          'email' in request.auth.token &&
+          'email_verified' in request.auth.token &&
+          request.auth.token.email == 'un54208@gmail.com' &&
+          request.auth.token.email_verified == true
+        )
       );
     }
 
@@ -268,7 +273,7 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow get: if isSignedIn() && isValidId(roomId) && (
         isAdmin() ||
-        (isApprovedUser() && (existing().status == 'open' || request.auth.uid in existing().participantIds))
+        (isApprovedUser() && (resource == null || existing().status == 'open' || request.auth.uid in existing().participantIds))
       );
 
       allow list: if isSignedIn() && (
